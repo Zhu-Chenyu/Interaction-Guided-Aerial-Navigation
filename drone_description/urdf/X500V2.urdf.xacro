@@ -1,0 +1,113 @@
+<?xml version="1.0" ?>
+<robot name="X500_V2"
+  xmlns:xacro="http://ros.org/wiki/xacro">
+
+  <xacro:arg name="namespace" default=""/>
+  <xacro:property name="namespace" value="$(arg namespace)"/>
+
+  <xacro:arg name="color" default="purple"/>
+  <xacro:property name="robot_color" value="$(arg color)"/>
+
+  <!-- Collision model dimensions (meters) -->
+  <xacro:property name="base_collision_radius" value="0.28"/>
+  <xacro:property name="base_collision_height" value="0.36"/>
+
+  <xacro:property name="prop_collision_radius" value="0.13"/>
+  <xacro:property name="prop_collision_height" value="0.02"/>
+
+  <!-- Propeller layout (meters) -->
+  <xacro:property name="prop_center_offset" value="0.25"/>   <!-- radial distance from base axis -->
+  <xacro:property name="prop_centroid_z" value="0.27"/>      <!-- prop centroid height above base cylinder bottom -->
+  <xacro:property name="prop_diag_offset" value="${prop_center_offset / 1.41421356237}"/>
+
+  <!-- Chosen frames / footprint convention -->
+  <!-- base_footprint: on ground plane (z=0), yaw-only frame -->
+  <!-- base_link: located at bottom surface center of base cylinder (z=0 at bottom of base collision cylinder) -->
+
+  <!-- Init colour -->
+  <material name="black">
+      <color rgba="0.0 0.0 0.0 1.0"/>
+  </material>
+
+  <material name="dark">
+    <color rgba="0.3 0.3 0.3 1.0"/>
+  </material>
+
+  <material name="light_gray">
+    <color rgba="0.6 0.6 0.6 1.0"/>
+  </material>
+
+  <material name="blue">
+    <color rgba="0.0 0.0 0.8 1.0"/>
+  </material>
+
+  <material name="purple">
+    <color rgba="0.3 0.16 0.52 1.0"/>
+  </material>
+
+  <link name="${namespace}base_footprint"/>
+
+  <!-- Put base_link's origin at the bottom surface center of the base collision cylinder.
+       base_footprint remains on the ground plane; we lift base_link by half the base height. -->
+  <joint name="${namespace}base_joint" type="fixed">
+    <parent link="${namespace}base_footprint"/>
+    <child link="${namespace}base_link"/>
+    <origin xyz="0.0 0.0 ${base_collision_height/2.0}" rpy="0 0 0"/>
+  </joint>
+
+  <link name="${namespace}base_link">
+    <!-- Visual mesh (keep as-is) -->
+    <visual>
+      <origin xyz="0 0 0.035" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://drone_description/meshes/X500V2_LowPoly.stl" scale="1 1 1"/>
+      </geometry>
+      <material name="${robot_color}"/>
+    </visual>
+
+    <!-- Collision: base cylinder (centered at half-height above bottom) -->
+    <collision name="base_collision_cylinder">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="${base_collision_radius}" length="${base_collision_height}"/>
+      </geometry>
+    </collision>
+
+    <xacro:property name="prop_z" value="${-base_collision_height/2.0 + prop_centroid_z}"/>
+
+    <collision name="prop_collision_front_left">
+      <origin xyz="${prop_diag_offset} ${prop_diag_offset} ${prop_z}" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="${prop_collision_radius}" length="${prop_collision_height}"/>
+      </geometry>
+    </collision>
+
+    <collision name="prop_collision_front_right">
+      <origin xyz="${prop_diag_offset} ${-prop_diag_offset} ${prop_z}" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="${prop_collision_radius}" length="${prop_collision_height}"/>
+      </geometry>
+    </collision>
+
+    <collision name="prop_collision_back_left">
+      <origin xyz="${-prop_diag_offset} ${prop_diag_offset} ${prop_z}" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="${prop_collision_radius}" length="${prop_collision_height}"/>
+      </geometry>
+    </collision>
+
+    <collision name="prop_collision_back_right">
+      <origin xyz="${-prop_diag_offset} ${-prop_diag_offset} ${prop_z}" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="${prop_collision_radius}" length="${prop_collision_height}"/>
+      </geometry>
+    </collision>
+
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="8.2573504e-01"/>
+      <inertia ixx="2.2124416e-03" ixy="-1.2294101e-05" ixz="3.4938785e-05" iyy="2.1193702e-03" iyz="-5.0120904e-06" izz="2.0064271e-03" />
+    </inertial>
+  </link>
+
+</robot>
