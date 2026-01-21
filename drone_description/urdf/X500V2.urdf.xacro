@@ -5,7 +5,7 @@
   <xacro:arg name="namespace" default=""/>
   <xacro:property name="namespace" value="$(arg namespace)"/>
 
-  <xacro:arg name="color" default="purple"/>
+  <xacro:arg name="color" default="light_gray"/>
   <xacro:property name="robot_color" value="$(arg color)"/>
 
   <!-- Collision model dimensions (meters) -->
@@ -16,13 +16,9 @@
   <xacro:property name="prop_collision_height" value="0.02"/>
 
   <!-- Propeller layout (meters) -->
-  <xacro:property name="prop_center_offset" value="0.25"/>   <!-- radial distance from base axis -->
-  <xacro:property name="prop_centroid_z" value="0.27"/>      <!-- prop centroid height above base cylinder bottom -->
+  <xacro:property name="prop_center_offset" value="0.25"/>
+  <xacro:property name="prop_centroid_z" value="0.27"/>
   <xacro:property name="prop_diag_offset" value="${prop_center_offset / 1.41421356237}"/>
-
-  <!-- Chosen frames / footprint convention -->
-  <!-- base_footprint: on ground plane (z=0), yaw-only frame -->
-  <!-- base_link: located at bottom surface center of base cylinder (z=0 at bottom of base collision cylinder) -->
 
   <!-- Init colour -->
   <material name="black">
@@ -45,27 +41,35 @@
     <color rgba="0.3 0.16 0.52 1.0"/>
   </material>
 
-  <link name="${namespace}base_footprint"/>
+  <!-- IMU_LINK is now the ROOT of the robot's TF tree -->
+  <link name="${namespace}imu_link">
+    <visual>
+      <geometry>
+        <box size="0.08 0.04 0.01"/>
+      </geometry>
+      <material name="blue"/>
+    </visual>
+  </link>
 
-  <!-- Put base_link's origin at the bottom surface center of the base collision cylinder.
-       base_footprint remains on the ground plane; we lift base_link by half the base height. -->
-  <joint name="${namespace}base_joint" type="fixed">
-    <parent link="${namespace}base_footprint"/>
+  <!-- BASE_LINK is CHILD of imu_link -->
+  <!-- If IMU is at center of drone, offset is 0,0,0 -->
+  <!-- If IMU is offset from center, adjust xyz accordingly -->
+  <joint name="${namespace}imu_to_base" type="fixed">
+    <parent link="${namespace}imu_link"/>
     <child link="${namespace}base_link"/>
-    <origin xyz="0.0 0.0 ${base_collision_height/2.0}" rpy="0 0 0"/>
+    <!-- Adjust this based on where IMU is relative to drone center -->
+    <origin xyz="0.0 0.0 -0.075" rpy="0 0 0"/>  
   </joint>
 
   <link name="${namespace}base_link">
-    <!-- Visual mesh (keep as-is) -->
     <visual>
-      <origin xyz="0 0 0.035" rpy="0 0 0"/>
+      <origin xyz="0 0 0.035" rpy="0 0 1.5708"/>
       <geometry>
         <mesh filename="package://drone_description/meshes/X500V2_LowPoly.stl" scale="1 1 1"/>
       </geometry>
       <material name="${robot_color}"/>
     </visual>
 
-    <!-- Collision: base cylinder (centered at half-height above bottom) -->
     <collision name="base_collision_cylinder">
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
@@ -106,8 +110,19 @@
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <mass value="8.2573504e-01"/>
-      <inertia ixx="2.2124416e-03" ixy="-1.2294101e-05" ixz="3.4938785e-05" iyy="2.1193702e-03" iyz="-5.0120904e-06" izz="2.0064271e-03" />
+      <inertia ixx="2.2124416e-03" ixy="-1.2294101e-05" ixz="3.4938785e-05" 
+               iyy="2.1193702e-03" iyz="-5.0120904e-06" izz="2.0064271e-03" />
     </inertial>
   </link>
+
+  <!-- BASE_FOOTPRINT is CHILD of base_link (ground projection) -->
+  <joint name="${namespace}base_to_footprint" type="fixed">
+    <parent link="${namespace}base_link"/>
+    <child link="${namespace}base_footprint"/>
+    <!-- Footprint is projected down to ground -->
+    <origin xyz="0.0 0.0 ${-base_collision_height/2.0}" rpy="0 0 0"/>
+  </joint>
+
+  <link name="${namespace}base_footprint"/>
 
 </robot>

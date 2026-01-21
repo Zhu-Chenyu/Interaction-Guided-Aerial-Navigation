@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- Robot State Publisher -->
+    <node pkg="robot_state_publisher" exec="robot_state_publisher" name="robot_state_publisher" output="screen">
+        <param name="robot_description" value="$(command 'xacro $(find-pkg-share drone_description)/urdf/X500V2.urdf.xacro')" type="str"/>
+    </node>
+
+    <!-- RViz -->
+    <node pkg="rviz2" exec="rviz2" name="rviz2" on_exit="shutdown" output="screen"
+          args="-d $(find-pkg-share drone_viz)/config/drone_viz.rviz"/>
+</launch>
