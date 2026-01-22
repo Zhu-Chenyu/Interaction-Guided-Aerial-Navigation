@@ -41,7 +41,7 @@
     <color rgba="0.3 0.16 0.52 1.0"/>
   </material>
 
-  <!-- IMU_LINK is now the ROOT of the robot's TF tree -->
+  <!-- IMU_LINK is the ROOT of the robot's TF tree -->
   <link name="${namespace}imu_link">
     <visual>
       <geometry>
