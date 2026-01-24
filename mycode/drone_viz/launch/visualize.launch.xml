@@ -1,11 +1,14 @@
 <?xml version="1.0"?>
 <launch>
-    <!-- Robot State Publisher -->
+    <!-- OptiTrack TF Publisher (from optitrack package) -->
+    <node pkg="optitrack" exec="talker" name="optitrack_publisher" output="screen"/>
+
+    <!-- Robot State Publisher (publishes URDF transforms) -->
     <node pkg="robot_state_publisher" exec="robot_state_publisher" name="robot_state_publisher" output="screen">
         <param name="robot_description" value="$(command 'xacro $(find-pkg-share drone_description)/urdf/X500V2.urdf.xacro')" type="str"/>
     </node>
 
-    <!-- RViz -->
+    <!-- RViz (visualization) -->
     <node pkg="rviz2" exec="rviz2" name="rviz2" on_exit="shutdown" output="screen"
           args="-d $(find-pkg-share drone_viz)/config/drone_viz.rviz"/>
 </launch>
