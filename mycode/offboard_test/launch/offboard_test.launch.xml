@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- Offboard test launch file with OptiTrack and RViz visualization -->
+
+  <!-- Parameters for OptiTrack frame names -->
+  <arg name="world_frame" default="optitrack" description="OptiTrack world frame"/>
+  <arg name="drone_frame" default="imu_link" description="OptiTrack drone rigid body frame"/>
+  <arg name="takeoff_height" default="0.2" description="Takeoff height in meters"/>
+  <arg name="hover_duration" default="5.0" description="Hover duration in seconds"/>
+  <arg name="validation_duration" default="3.0" description="Pose validation duration in seconds"/>
+  <arg name="max_position_variance" default="0.01" description="Max allowed position variance during validation"/>
+
+  <!-- OptiTrack TF Publisher (publishes optitrack -> imu_link) -->
+  <node pkg="optitrack" exec="talker" name="optitrack_publisher" output="screen"/>
+
+  <!-- Robot State Publisher (publishes URDF transforms for visualization) -->
+  <node pkg="robot_state_publisher" exec="robot_state_publisher" name="robot_state_publisher" output="screen">
+    <param name="robot_description" value="$(command 'xacro $(find-pkg-share drone_description)/urdf/X500V2.urdf.xacro color:=light_gray')" type="str"/>
+  </node>
+
+  <!-- Vision bridge: always forwards OptiTrack TF to PX4 VehicleOdometry -->
+  <node pkg="offboard_test" exec="vision_bridge_node" name="vision_bridge" output="screen">
+    <param name="world_frame" value="$(var world_frame)"/>
+    <param name="drone_frame" value="$(var drone_frame)"/>
+  </node>
+
+  <!-- Offboard test node (arms, takes off, hovers, lands) -->
+  <node pkg="offboard_test" exec="offboard_test_node" name="offboard_test" output="screen">
+    <param name="world_frame" value="$(var world_frame)"/>
+    <param name="drone_frame" value="$(var drone_frame)"/>
+    <param name="takeoff_height" value="$(var takeoff_height)"/>
+    <param name="hover_duration" value="$(var hover_duration)"/>
+    <param name="validation_duration" value="$(var validation_duration)"/>
+    <param name="max_position_variance" value="$(var max_position_variance)"/>
+  </node>
+
+  <!-- RViz visualization -->
+  <node pkg="rviz2" exec="rviz2" name="rviz2" output="screen"
+        args="-d $(find-pkg-share drone_viz)/config/drone_viz.rviz"/>
+</launch>

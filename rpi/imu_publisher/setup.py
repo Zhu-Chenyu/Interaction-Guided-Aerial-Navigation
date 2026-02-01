@@ -23,6 +23,7 @@ setup(
     entry_points={
         'console_scripts': [
             'imu_node = imu_publisher.imu_node:main',
+            'vision_bridge = imu_publisher.vision_bridge:main',
         ],
     },
 )

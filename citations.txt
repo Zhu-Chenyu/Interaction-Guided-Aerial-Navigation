@@ -1,0 +1,4 @@
+Collaborator:
+Jeff Zhang - The optitrack package is editted based on Jeff Zhang's code.
+
+[1] PX4 Documentation - px4_msgs_minimal package is editted based on PX4 documentation. https://github.com/PX4/px4_msgs?tab=readme-ov-file#

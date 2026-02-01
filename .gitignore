@@ -1,4 +1,4 @@
-# ROS 2 build artifacts
+# ROS 2 Build Artifacts
 build/
 install/
 log/
@@ -7,9 +7,8 @@ log/
 __pycache__/
 *.py[cod]
 *.egg-info/
-.eggs/
 
-# IDE
+# Editor/IDE
 .vscode/
 .idea/
 *.swp
@@ -20,17 +19,8 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Colcon
-.colcon/
+# Agent
+agent.md
 
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Compiled objects
-*.o
-*.so
-*.a
-
-.vscode
+# External dependencies
+px4_msgs/
