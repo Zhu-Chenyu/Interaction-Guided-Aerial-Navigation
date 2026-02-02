@@ -194,10 +194,13 @@ private:
                     if (max_var <= max_position_variance_) {
                         RCLCPP_INFO(this->get_logger(), 
                             "Pose is stable! Starting setpoint stream");
-                        // Record initial position as home
+                        // Record initial position and yaw as home
                         home_x_ = current_x_;
                         home_y_ = current_y_;
                         home_z_ = current_z_;
+                        home_yaw_ = current_yaw_;
+                        RCLCPP_INFO(this->get_logger(), "Home yaw: %.1f degrees",
+                                    home_yaw_ * 180.0 / M_PI);
                         state_ = State::SENDING_SETPOINTS;
                         setpoint_start_time_ = now;
                     } else {
@@ -216,7 +219,7 @@ private:
 
             case State::SENDING_SETPOINTS:
                 // Stream OCM + trajectory setpoints so PX4 is ready for offboard.
-                publish_trajectory_setpoint(home_x_, home_y_, home_z_, 0.0);
+                publish_trajectory_setpoint(home_x_, home_y_, home_z_, home_yaw_);
                 if ((now - setpoint_start_time_).seconds() > 2.0) {
                     // Same order as official PX4 example: offboard mode first, then arm
                     RCLCPP_INFO(this->get_logger(), "Requesting offboard mode + arm...");
@@ -228,7 +231,7 @@ private:
                 break;
 
             case State::ARMING:
-                publish_trajectory_setpoint(home_x_, home_y_, home_z_, 0.0);
+                publish_trajectory_setpoint(home_x_, home_y_, home_z_, home_yaw_);
 
                 if (arming_state_ == VehicleStatus::ARMING_STATE_ARMED &&
                     nav_state_ == VehicleStatus::NAVIGATION_STATE_OFFBOARD) {
@@ -237,11 +240,17 @@ private:
                     state_ = State::TAKING_OFF;
                     takeoff_start_time_ = now;
                 } else if ((now - command_sent_time_).seconds() > 1.0) {
-                    // Keep requesting offboard mode until confirmed
+                    // Request offboard mode if not yet confirmed
                     if (nav_state_ != VehicleStatus::NAVIGATION_STATE_OFFBOARD) {
                         RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
                             "Requesting offboard mode (nav=%d)...", nav_state_);
                         publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1, 6);
+                    }
+                    // Retry arm if in offboard but not yet armed
+                    if (nav_state_ == VehicleStatus::NAVIGATION_STATE_OFFBOARD &&
+                        arming_state_ != VehicleStatus::ARMING_STATE_ARMED) {
+                        RCLCPP_INFO(this->get_logger(), "In offboard mode, sending arm command...");
+                        arm();
                     }
                     command_sent_time_ = now;
                 }
@@ -251,7 +260,7 @@ private:
                 {
                     // Set target altitude directly; PX4 position controller handles the trajectory
                     double target_z = home_z_ - takeoff_height_;
-                    publish_trajectory_setpoint(home_x_, home_y_, target_z, 0.0);
+                    publish_trajectory_setpoint(home_x_, home_y_, target_z, home_yaw_);
 
                     // Check if we've reached target altitude (within 0.05m)
                     if (std::abs(current_z_ - target_z) < 0.05) {
@@ -263,7 +272,7 @@ private:
                 break;
 
             case State::HOVERING:
-                publish_trajectory_setpoint(home_x_, home_y_, home_z_ - takeoff_height_, 0.0);
+                publish_trajectory_setpoint(home_x_, home_y_, home_z_ - takeoff_height_, home_yaw_);
                 if ((now - hover_start_time_).seconds() > hover_duration_) {
                     RCLCPP_INFO(this->get_logger(), "Hover complete, landing...");
                     state_ = State::LANDING;
@@ -280,7 +289,7 @@ private:
                         current_alt = 0.0;
                     }
                     double target_z = home_z_ - current_alt;
-                    publish_trajectory_setpoint(home_x_, home_y_, target_z, 0.0);
+                    publish_trajectory_setpoint(home_x_, home_y_, target_z, home_yaw_);
 
                     if (current_alt <= 0.0) {
                         RCLCPP_INFO(this->get_logger(), "Landed, disarming...");
@@ -292,7 +301,7 @@ private:
                 break;
 
             case State::DISARMING:
-                publish_trajectory_setpoint(home_x_, home_y_, home_z_, 0.0);
+                publish_trajectory_setpoint(home_x_, home_y_, home_z_, home_yaw_);
                 if (arming_state_ == VehicleStatus::ARMING_STATE_DISARMED) {
                     RCLCPP_INFO(this->get_logger(), "Disarmed. Test complete!");
                     state_ = State::DONE;
@@ -314,11 +323,18 @@ private:
     {
         try {
             auto transform = tf_buffer_->lookupTransform(world_frame_, drone_frame_, tf2::TimePointZero);
-            
-            // Convert from OptiTrack Z-up to PX4 NED (only z flips)
+
+            // Convert from OptiTrack to PX4 NED (negate Y and Z)
             current_x_ = transform.transform.translation.x;
-            current_y_ = transform.transform.translation.y;
+            current_y_ = -transform.transform.translation.y;
             current_z_ = -transform.transform.translation.z;
+
+            // Extract yaw from OptiTrack quaternion (Z-up), then negate for NED
+            auto& q = transform.transform.rotation;
+            double siny_cosp = 2.0 * (q.w * q.z + q.x * q.y);
+            double cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
+            current_yaw_ = -std::atan2(siny_cosp, cosy_cosp);  // negate for NED
+
             return true;
         } catch (const tf2::TransformException& ex) {
             if (state_ == State::WAITING_FOR_POSE) {
@@ -436,7 +452,9 @@ private:
 
     // Position tracking (NED for setpoints)
     double current_x_ = 0.0, current_y_ = 0.0, current_z_ = 0.0;
+    double current_yaw_ = 0.0;
     double home_x_ = 0.0, home_y_ = 0.0, home_z_ = 0.0;
+    double home_yaw_ = 0.0;
     
     // Pose validation
     int consecutive_pose_count_ = 0;

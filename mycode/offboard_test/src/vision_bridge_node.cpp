@@ -12,8 +12,10 @@
 #include <string>
 
 #include <rclcpp/rclcpp.hpp>
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
+#include <tf2_ros/transform_broadcaster.h>
 
 #include <px4_msgs/msg/vehicle_odometry.hpp>
 
@@ -33,6 +35,7 @@ public:
 
         tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
         tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+        tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(*this);
 
         rclcpp::QoS qos_px4(10);
         qos_px4.reliability(rclcpp::ReliabilityPolicy::BestEffort);
@@ -66,18 +69,15 @@ private:
 
         msg.pose_frame = VehicleOdometry::POSE_FRAME_NED;
 
-        // Position: OptiTrack Z-up (x, y horizontal, z=up) -> NED (x, y horizontal, z=down)
+        // Position: OptiTrack (X-fwd, Y-left, Z-up) -> NED (X-north, Y-east, Z-down)
         msg.position[0] = tf.transform.translation.x;
-        msg.position[1] = tf.transform.translation.y;
-        msg.position[2] = -tf.transform.translation.z;   // up -> down
+        msg.position[1] = -tf.transform.translation.y;  // left -> east (right)
+        msg.position[2] = -tf.transform.translation.z;  // up -> down
 
-        // Quaternion: Z-up to NED (Z-down), rotate 180° around x-axis
-        // q_ned = q_rot * q_optitrack, where q_rot = (0, 1, 0, 0) for 180° around x
-        // Result: w' = -qx, x' = qw, y' = qz, z' = -qy  (but simplified below)
-        // Actually for position-only frame flip (z negated), just negate qz and qw stays
+        // Quaternion: 180° rotation about X to convert Y-left/Z-up -> Y-right/Z-down
         msg.q[0] = tf.transform.rotation.w;
         msg.q[1] = tf.transform.rotation.x;
-        msg.q[2] = tf.transform.rotation.y;
+        msg.q[2] = -tf.transform.rotation.y;
         msg.q[3] = -tf.transform.rotation.z;
 
         // No velocity from mocap
@@ -104,10 +104,27 @@ private:
         msg.quality = 100;
 
         odom_pub_->publish(msg);
+
+        // Debug: publish NED data converted back to OptiTrack frame as a TF.
+        // If conversion is correct, "imu_link_ned_check" overlaps "imu_link" in RViz.
+        // Inverse: negate Y and Z back
+        geometry_msgs::msg::TransformStamped debug_tf;
+        debug_tf.header.stamp = tf.header.stamp;
+        debug_tf.header.frame_id = world_frame_;
+        debug_tf.child_frame_id = "imu_link_ned_check";
+        debug_tf.transform.translation.x = msg.position[0];
+        debug_tf.transform.translation.y = -msg.position[1];  // NED east -> OptiTrack left
+        debug_tf.transform.translation.z = -msg.position[2];  // NED down -> Z-up
+        debug_tf.transform.rotation.w = msg.q[0];
+        debug_tf.transform.rotation.x = msg.q[1];
+        debug_tf.transform.rotation.y = -msg.q[2];  // negate y back
+        debug_tf.transform.rotation.z = -msg.q[3];  // negate z back
+        tf_broadcaster_->sendTransform(debug_tf);
     }
 
     std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+    std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
     rclcpp::Publisher<VehicleOdometry>::SharedPtr odom_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
     std::string world_frame_;
