@@ -1,0 +1,10 @@
+digraph G {
+"optitrack" -> "imu_link"[label=" Broadcaster: default_authority\nAverage rate: 35.796\nBuffer length: 5.001\nMost recent transform: 1770172922.57749\nOldest transform: 1770172917.57694\n"];
+"optitrack" -> "imu_link_ned_check"[label=" Broadcaster: default_authority\nAverage rate: 24.745\nBuffer length: 5.011\nMost recent transform: 1770172922.57749\nOldest transform: 1770172917.566462\n"];
+"base_link" -> "base_footprint"[label=" Broadcaster: default_authority\nAverage rate: 10000.0\nBuffer length: 0.0\nMost recent transform: 0.0\nOldest transform: 0.0\n"];
+"imu_link" -> "base_link"[label=" Broadcaster: default_authority\nAverage rate: 10000.0\nBuffer length: 0.0\nMost recent transform: 0.0\nOldest transform: 0.0\n"];
+edge [style=invis];
+ subgraph cluster_legend { style=bold; color=black; label ="view_frames Result";
+"Recorded at time: 1770172922.6073508"[ shape=plaintext ] ;
+}->"optitrack";
+}

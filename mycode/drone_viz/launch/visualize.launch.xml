@@ -1,5 +1,7 @@
 <?xml version="1.0"?>
 <launch>
+    <arg name="world_frame" default="optitrack" description="OptiTrack world frame"/>
+
     <!-- OptiTrack TF Publisher (from optitrack package) -->
     <node pkg="optitrack" exec="talker" name="optitrack_publisher" output="screen"/>
 
@@ -8,7 +10,18 @@
         <param name="robot_description" value="$(command 'xacro $(find-pkg-share drone_description)/urdf/X500V2.urdf.xacro')" type="str"/>
     </node>
 
-    <!-- RViz (visualization) -->
-    <node pkg="rviz2" exec="rviz2" name="rviz2" on_exit="shutdown" output="screen"
+    <!-- Arena corner columns (purple markers) -->
+    <node pkg="drone_description" exec="arena_markers_node" name="arena_markers" output="screen">
+        <param name="frame_id" value="$(var world_frame)"/>
+        <param name="column_width" value="0.1"/>
+        <param name="column_height" value="2.92"/>
+        <param name="x_back" value="-1.69"/>
+        <param name="x_front" value="1.69"/>
+        <param name="y_left" value="2.15"/>
+        <param name="y_right" value="-3.27"/>
+    </node>
+
+    <!-- RViz (visualization) - no on_exit since we don't want RViz closing to kill everything -->
+    <node pkg="rviz2" exec="rviz2" name="rviz2" output="screen"
           args="-d $(find-pkg-share drone_viz)/config/drone_viz.rviz"/>
 </launch>

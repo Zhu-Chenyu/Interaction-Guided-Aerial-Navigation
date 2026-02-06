@@ -18,7 +18,7 @@ enum objectIDs {
 	LEFTHANDID = 106,
 	RIGHTHANDID = 107,
 	VESTID = 108,
-	WAND = 109
+	WAND = 1015
 };
 
 void NATNET_CALLCONV DataHandler(sFrameOfMocapData* data, void* clockPointer);
@@ -122,7 +122,7 @@ void initialize_optitrack(int* ret, NatNetClient** mClient, rclcpp::Clock::Share
     sNatNetClientConnectParams g_connectParams;
     g_connectParams.connectionType = ConnectionType_Unicast; // change to ConnectionType_Multicast if you want multicast
     g_connectParams.serverAddress = "192.168.20.189";
-    g_connectParams.localAddress = "192.168.20.134";
+    g_connectParams.localAddress = "192.168.20.135";
     
 	// check if client-server connection was successfully established
     *ret = (*mClient)->Connect(g_connectParams);

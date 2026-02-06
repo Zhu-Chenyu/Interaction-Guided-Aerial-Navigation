@@ -5,18 +5,15 @@
   <!-- Parameters for OptiTrack frame names -->
   <arg name="world_frame" default="optitrack" description="OptiTrack world frame"/>
   <arg name="drone_frame" default="imu_link" description="OptiTrack drone rigid body frame"/>
-  <arg name="takeoff_height" default="0.2" description="Takeoff height in meters"/>
-  <arg name="hover_duration" default="5.0" description="Hover duration in seconds"/>
+  <arg name="takeoff_height" default="1.8" description="Takeoff height in meters"/>
+  <arg name="hover_duration" default="10.0" description="Hover duration in seconds"/>
   <arg name="validation_duration" default="3.0" description="Pose validation duration in seconds"/>
   <arg name="max_position_variance" default="0.01" description="Max allowed position variance during validation"/>
 
-  <!-- OptiTrack TF Publisher (publishes optitrack -> imu_link) -->
-  <node pkg="optitrack" exec="talker" name="optitrack_publisher" output="screen"/>
-
-  <!-- Robot State Publisher (publishes URDF transforms for visualization) -->
-  <node pkg="robot_state_publisher" exec="robot_state_publisher" name="robot_state_publisher" output="screen">
-    <param name="robot_description" value="$(command 'xacro $(find-pkg-share drone_description)/urdf/X500V2.urdf.xacro color:=light_gray')" type="str"/>
-  </node>
+  <!-- Include visualize.launch from drone_viz (OptiTrack, robot state publisher, arena markers, RViz) -->
+  <include file="$(find-pkg-share drone_viz)/launch/visualize.launch.xml">
+    <arg name="world_frame" value="$(var world_frame)"/>
+  </include>
 
   <!-- Vision bridge: always forwards OptiTrack TF to PX4 VehicleOdometry -->
   <node pkg="offboard_test" exec="vision_bridge_node" name="vision_bridge" output="screen">
@@ -24,17 +21,42 @@
     <param name="drone_frame" value="$(var drone_frame)"/>
   </node>
 
-  <!-- Offboard test node (arms, takes off, hovers, lands) -->
-  <node pkg="offboard_test" exec="offboard_test_node" name="offboard_test" output="screen">
+  <!-- Offboard test node (arms, takes off, hovers, lands) - DISABLED, using force_drive_node instead -->
+  <!-- <node pkg="offboard_test" exec="offboard_test_node" name="offboard_test" output="screen">
     <param name="world_frame" value="$(var world_frame)"/>
     <param name="drone_frame" value="$(var drone_frame)"/>
     <param name="takeoff_height" value="$(var takeoff_height)"/>
     <param name="hover_duration" value="$(var hover_duration)"/>
     <param name="validation_duration" value="$(var validation_duration)"/>
     <param name="max_position_variance" value="$(var max_position_variance)"/>
+  </node> -->
+
+  <!-- Force estimator (Kalman filter for horizontal external forces) -->
+  <!-- <node pkg="offboard_test" exec="force_estimator_node" name="force_estimator" output="screen">
+    <param name="world_frame" value="$(var world_frame)"/>
+    <param name="drone_frame" value="$(var drone_frame)"/>
+    <param name="drone_mass" value="1.56"/>
+    <param name="hover_thrust_normalized" value="0.5"/>
+    <param name="process_noise_pos" value="0.01"/>
+    <param name="process_noise_vel" value="0.1"/>
+    <param name="process_noise_force" value="1.0"/>
+    <param name="measurement_noise" value="0.001"/>
+  </node> -->
+
+  <!-- Force drive node (drives drone in direction of external force) -->
+  <node pkg="offboard_test" exec="force_drive_node" name="force_drive" output="screen">
+    <param name="world_frame" value="$(var world_frame)"/>
+    <param name="drone_frame" value="$(var drone_frame)"/>
+    <param name="takeoff_altitude" value="$(var takeoff_height)"/>
+    <param name="altitude_threshold" value="0.05"/>
+    <param name="force_deadzone" value="1.0"/>
+    <param name="velocity_gain" value="0.5"/>
+    <param name="max_velocity" value="1.0"/>
+    <param name="decel_rate" value="0.5"/>
+    <param name="hold_speed_threshold" value="0.05"/>
   </node>
 
-  <!-- RViz visualization -->
-  <node pkg="rviz2" exec="rviz2" name="rviz2" output="screen"
-        args="-d $(find-pkg-share drone_viz)/config/drone_viz.rviz"/>
+  <!-- Hover position plotter -->
+  <!-- <node pkg="offboard_test" exec="plot_hover_position" name="plot_hover_position" output="screen"/> -->
+
 </launch>

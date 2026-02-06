@@ -98,10 +98,32 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /brick
       Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: ArenaMarkers
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /arena_markers
+      Value: true
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Frame Timeout: 15
+      Frames:
+        All Enabled: true
+      Marker Scale: 0.3
+      Name: TF
+      Show Arrows: true
+      Show Axes: true
+      Show Names: true
+      Update Interval: 0
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: base_footprint
+    Fixed Frame: optitrack
     Frame Rate: 30
   Name: root
   Tools:

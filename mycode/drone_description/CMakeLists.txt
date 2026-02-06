@@ -7,9 +7,19 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
-# uncomment the following section in order to fill in
-# further dependencies manually.
-# find_package(<dependency> REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(visualization_msgs REQUIRED)
+
+# Arena markers node
+add_executable(arena_markers_node src/arena_markers_node.cpp)
+target_link_libraries(arena_markers_node PUBLIC
+  ${visualization_msgs_TARGETS}
+  rclcpp::rclcpp
+)
+
+install(TARGETS arena_markers_node
+  DESTINATION lib/${PROJECT_NAME}
+)
 
 install(DIRECTORY urdf launch meshes config
   DESTINATION share/${PROJECT_NAME}

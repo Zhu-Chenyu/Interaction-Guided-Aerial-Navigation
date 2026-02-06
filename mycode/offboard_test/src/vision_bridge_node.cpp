@@ -108,18 +108,18 @@ private:
         // Debug: publish NED data converted back to OptiTrack frame as a TF.
         // If conversion is correct, "imu_link_ned_check" overlaps "imu_link" in RViz.
         // Inverse: negate Y and Z back
-        geometry_msgs::msg::TransformStamped debug_tf;
-        debug_tf.header.stamp = tf.header.stamp;
-        debug_tf.header.frame_id = world_frame_;
-        debug_tf.child_frame_id = "imu_link_ned_check";
-        debug_tf.transform.translation.x = msg.position[0];
-        debug_tf.transform.translation.y = -msg.position[1];  // NED east -> OptiTrack left
-        debug_tf.transform.translation.z = -msg.position[2];  // NED down -> Z-up
-        debug_tf.transform.rotation.w = msg.q[0];
-        debug_tf.transform.rotation.x = msg.q[1];
-        debug_tf.transform.rotation.y = -msg.q[2];  // negate y back
-        debug_tf.transform.rotation.z = -msg.q[3];  // negate z back
-        tf_broadcaster_->sendTransform(debug_tf);
+        // geometry_msgs::msg::TransformStamped debug_tf;
+        // debug_tf.header.stamp = tf.header.stamp;
+        // debug_tf.header.frame_id = world_frame_;
+        // debug_tf.child_frame_id = "imu_link_ned_check";
+        // debug_tf.transform.translation.x = msg.position[0];
+        // debug_tf.transform.translation.y = -msg.position[1];  // NED east -> OptiTrack left
+        // debug_tf.transform.translation.z = -msg.position[2];  // NED down -> Z-up
+        // debug_tf.transform.rotation.w = msg.q[0];
+        // debug_tf.transform.rotation.x = msg.q[1];
+        // debug_tf.transform.rotation.y = -msg.q[2];  // negate y back
+        // debug_tf.transform.rotation.z = -msg.q[3];  // negate z back
+        // tf_broadcaster_->sendTransform(debug_tf);
     }
 
     std::shared_ptr<tf2_ros::Buffer> tf_buffer_;

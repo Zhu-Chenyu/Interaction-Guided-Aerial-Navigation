@@ -413,8 +413,8 @@ private:
     {
         arming_state_ = msg->arming_state;
         nav_state_ = msg->nav_state;
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-            "PX4 status: arming=%d, nav=%d", arming_state_, nav_state_);
+        // RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+        //     "PX4 status: arming=%d, nav=%d", arming_state_, nav_state_);
     }
 
     void command_ack_callback(const VehicleCommandAck::SharedPtr msg)
