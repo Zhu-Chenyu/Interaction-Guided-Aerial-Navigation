@@ -9,7 +9,7 @@
   <xacro:property name="robot_color" value="$(arg color)"/>
 
   <!-- Collision model dimensions (meters) -->
-  <xacro:property name="base_collision_radius" value="0.28"/>
+  <xacro:property name="base_collision_radius" value="0.45"/>
   <xacro:property name="base_collision_height" value="0.36"/>
 
   <xacro:property name="prop_collision_radius" value="0.13"/>
@@ -77,7 +77,7 @@
       </geometry>
     </collision>
 
-    <xacro:property name="prop_z" value="${-base_collision_height/2.0 + prop_centroid_z}"/>
+    <!-- <xacro:property name="prop_z" value="${-base_collision_height/2.0 + prop_centroid_z}"/>
 
     <collision name="prop_collision_front_left">
       <origin xyz="${prop_diag_offset} ${prop_diag_offset} ${prop_z}" rpy="0 0 0"/>
@@ -105,7 +105,7 @@
       <geometry>
         <cylinder radius="${prop_collision_radius}" length="${prop_collision_height}"/>
       </geometry>
-    </collision>
+    </collision> -->
 
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>

@@ -10,6 +10,10 @@
         <param name="robot_description" value="$(command 'xacro $(find-pkg-share drone_description)/urdf/X500V2.urdf.xacro')" type="str"/>
     </node>
 
+    <!-- Static TF: base_link -> laser (adjust xyz to match LiDAR mount position) -->
+    <node pkg="tf2_ros" exec="static_transform_publisher" name="base_to_laser_tf" output="screen"
+          args="--x 0 --y 0 --z 0.05 --roll 0 --pitch 0 --yaw 0 --frame-id base_link --child-frame-id laser"/>
+
     <!-- Arena corner columns (purple markers) -->
     <node pkg="drone_description" exec="arena_markers_node" name="arena_markers" output="screen">
         <param name="frame_id" value="$(var world_frame)"/>

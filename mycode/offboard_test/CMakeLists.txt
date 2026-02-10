@@ -14,6 +14,7 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(visualization_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 
 # Add executables
 add_executable(offboard_test_node src/offboard_test_node.cpp)
@@ -40,6 +41,8 @@ add_executable(force_drive_node src/force_drive_node.cpp)
 target_link_libraries(force_drive_node PUBLIC
   ${geometry_msgs_TARGETS}
   ${px4_msgs_TARGETS}
+  ${sensor_msgs_TARGETS}
+  ${visualization_msgs_TARGETS}
   rclcpp::rclcpp
   tf2_ros::tf2_ros
   Eigen3::Eigen

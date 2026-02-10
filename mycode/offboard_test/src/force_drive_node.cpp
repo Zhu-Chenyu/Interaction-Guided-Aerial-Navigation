@@ -1,9 +1,10 @@
 /**
  * @file force_drive_node.cpp
- * @brief Drive the drone in the direction of estimated external force.
+ * @brief Drive the drone in the direction of estimated external force with obstacle avoidance.
  *
  * Integrates a Kalman filter to estimate external forces directly (no inter-node communication).
  * Uses OptiTrack TF for position and PX4 VehicleOdometry for attitude.
+ * LiDAR-based obstacle avoidance adds repulsive forces from nearby obstacles.
  *
  * State machine:
  * 1. WAITING_FOR_POSE: Wait for valid OptiTrack data
@@ -12,6 +13,12 @@
  * 4. TAKING_OFF: Commands position to target altitude, waits until reached
  * 5. POSITION_HOLD: Holds current position until external force detected
  * 6. VELOCITY: Drives drone in force direction, decelerates when force removed
+ *
+ * Obstacle avoidance:
+ * - Considers obstacles in a hemicircle facing F_ext direction
+ * - Each obstacle generates repulsive force F = k/d^2 toward the drone
+ * - F_cmd = F_ext + F_rep (superposition)
+ * - Obstacle forces are NOT fed back into the Kalman filter
  */
 
 #include <chrono>
@@ -21,6 +28,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <geometry_msgs/msg/wrench_stamped.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 
@@ -29,6 +37,10 @@
 #include <px4_msgs/msg/vehicle_command.hpp>
 #include <px4_msgs/msg/vehicle_status.hpp>
 #include <px4_msgs/msg/vehicle_odometry.hpp>
+
+#include <sensor_msgs/msg/laser_scan.hpp>
+#include <visualization_msgs/msg/marker.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
 
 #include <Eigen/Dense>
 
@@ -52,6 +64,16 @@ public:
         this->declare_parameter<std::string>("world_frame", "optitrack");
         this->declare_parameter<std::string>("drone_frame", "imu_link");
 
+        // Obstacle avoidance parameters
+        this->declare_parameter<bool>("obstacle_avoidance_enabled", true);
+        this->declare_parameter<double>("repulsion_gain", 0.5);
+        this->declare_parameter<double>("min_obstacle_distance", 0.15);
+        this->declare_parameter<double>("max_obstacle_distance", 2.0);
+        this->declare_parameter<double>("hemicircle_radius_base", 0.5);
+        this->declare_parameter<double>("hemicircle_radius_gain", 0.3);
+        this->declare_parameter<double>("max_repulsion_force", 5.0);
+        this->declare_parameter<int>("scan_downsample_factor", 4);
+
         force_deadzone_ = this->get_parameter("force_deadzone").as_double();
         velocity_gain_ = this->get_parameter("velocity_gain").as_double();
         max_velocity_ = this->get_parameter("max_velocity").as_double();
@@ -62,6 +84,16 @@ public:
         mass_ = this->get_parameter("drone_mass").as_double();
         world_frame_ = this->get_parameter("world_frame").as_string();
         drone_frame_ = this->get_parameter("drone_frame").as_string();
+
+        obstacle_avoidance_enabled_ = this->get_parameter("obstacle_avoidance_enabled").as_bool();
+        repulsion_gain_ = this->get_parameter("repulsion_gain").as_double();
+        min_obstacle_distance_ = this->get_parameter("min_obstacle_distance").as_double();
+        max_obstacle_distance_ = this->get_parameter("max_obstacle_distance").as_double();
+        hemicircle_radius_base_ = this->get_parameter("hemicircle_radius_base").as_double();
+        hemicircle_radius_gain_ = this->get_parameter("hemicircle_radius_gain").as_double();
+        max_repulsion_force_ = this->get_parameter("max_repulsion_force").as_double();
+        scan_downsample_factor_ = this->get_parameter("scan_downsample_factor").as_int();
+        if (scan_downsample_factor_ < 1) scan_downsample_factor_ = 1;
 
         // Initialize Kalman filter
         init_kalman_filter();
@@ -90,6 +122,12 @@ public:
         vehicle_command_pub_ = this->create_publisher<VehicleCommand>(
             "/fmu/in/vehicle_command", qos_pub);
 
+        // Visualization publishers (volatile QoS for RViz compatibility)
+        obstacle_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
+            "/obstacle_markers", 10);
+        force_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
+            "/force_marker", 10);
+
         // Subscribers
         vehicle_status_sub_ = this->create_subscription<VehicleStatus>(
             "/fmu/out/vehicle_status", qos_sub,
@@ -105,6 +143,26 @@ public:
                 have_odom_ = true;
             });
 
+        // LaserScan subscriber (best effort, volatile for sensor data)
+        rclcpp::QoS qos_scan(10);
+        qos_scan.reliability(rclcpp::ReliabilityPolicy::BestEffort);
+        qos_scan.durability(rclcpp::DurabilityPolicy::Volatile);
+
+        scan_sub_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
+            "/scan", qos_scan,
+            [this](const sensor_msgs::msg::LaserScan::SharedPtr msg) {
+                latest_scan_ = *msg;
+                have_scan_ = true;
+            });
+        
+        force_sub_ = this->create_subscription<WrenchStamped>(
+            "/force_estimate", 10,
+            [this](const geometry_msgs::msg::WrenchStamped::SharedPtr msg) {
+                estimated_force_x_ = msg.wrench.force.x;
+                estimated_force_y_ = msg.wrench.force.y;
+            }
+        )
+
         // Control loop at 50 Hz
         timer_ = this->create_wall_timer(
             20ms, std::bind(&ForceDriveNode::control_loop, this));
@@ -113,6 +171,9 @@ public:
         RCLCPP_INFO(this->get_logger(),
             "  takeoff_alt=%.2f m, deadzone=%.2f N, gain=%.2f (m/s)/N, max_vel=%.2f m/s",
             takeoff_altitude_, force_deadzone_, velocity_gain_, max_velocity_);
+        RCLCPP_INFO(this->get_logger(),
+            "  obstacle_avoidance=%s, repulsion_gain=%.2f, hemicircle_base=%.2f m",
+            obstacle_avoidance_enabled_ ? "ON" : "OFF", repulsion_gain_, hemicircle_radius_base_);
     }
 
 private:
@@ -124,6 +185,13 @@ private:
         POSITION_HOLD,
         VELOCITY
     };
+
+    static double normalize_angle(double angle)
+    {
+        while (angle > M_PI) angle -= 2.0 * M_PI;
+        while (angle < -M_PI) angle += 2.0 * M_PI;
+        return angle;
+    }
 
     void init_kalman_filter()
     {
@@ -256,28 +324,352 @@ private:
         RCLCPP_INFO(this->get_logger(), "Arm command sent");
     }
 
+    /**
+     * Compute repulsive force from LiDAR obstacles.
+     *
+     * Works in body frame for scan processing, converts result to NED.
+     * Only considers obstacles in a hemicircle facing the F_ext direction.
+     * Each obstacle contributes k/d^2 repulsion toward the drone.
+     *
+     * Architecture constraint: this output must NOT feed back into update_force_estimate().
+     */
+    void compute_obstacle_repulsion(double fx_ned, double fy_ned, double yaw_ned,
+                                     double &frep_x_ned, double &frep_y_ned)
+    {
+        frep_x_ned = 0.0;
+        frep_y_ned = 0.0;
+        active_obstacle_points_.clear();
+
+        if (!have_scan_) return;
+
+        // Check scan staleness
+        double scan_age = (this->now() - rclcpp::Time(latest_scan_.header.stamp)).seconds();
+        if (scan_age > 1.0) {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                "Scan data stale (%.1fs old), obstacle avoidance disabled", scan_age);
+            return;
+        }
+
+        // Convert F_ext from NED to body frame (yaw rotation only)
+        double cos_yaw = std::cos(yaw_ned);
+        double sin_yaw = std::sin(yaw_ned);
+        double fx_body =  cos_yaw * fx_ned + sin_yaw * fy_ned;
+        double fy_body = -sin_yaw * fx_ned + cos_yaw * fy_ned;
+        double f_ext_mag = std::sqrt(fx_body * fx_body + fy_body * fy_body);
+
+        if (f_ext_mag < force_deadzone_) return;
+
+        // Hemicircle parameters
+        double f_ext_angle = std::atan2(fy_body, fx_body);
+        hemicircle_radius_ = std::min(
+            hemicircle_radius_base_ + hemicircle_radius_gain_ * f_ext_mag,
+            max_obstacle_distance_);
+        hemicircle_angle_ = f_ext_angle;
+
+        // Accumulate repulsive forces in body frame
+        double frep_x_body = 0.0;
+        double frep_y_body = 0.0;
+
+        const auto& scan = latest_scan_;
+        int n = static_cast<int>(scan.ranges.size());
+
+        for (int i = 0; i < n; i += scan_downsample_factor_) {
+            double range = scan.ranges[i];
+
+            // Skip invalid ranges
+            if (std::isnan(range) || std::isinf(range)) continue;
+            if (range < scan.range_min || range > scan.range_max) continue;
+
+            // Clamp close ranges to avoid singularity
+            if (range < min_obstacle_distance_) range = min_obstacle_distance_;
+
+            // Skip obstacles beyond hemicircle radius
+            if (range > hemicircle_radius_) continue;
+
+            // Scan point angle in body frame (laser frame aligned with body)
+            double angle_body = scan.angle_min + i * scan.angle_increment;
+
+            // Hemicircle check: is angle within +-90 deg of F_ext direction?
+            double angle_diff = normalize_angle(angle_body - f_ext_angle);
+            if (std::abs(angle_diff) > M_PI / 2.0) continue;
+
+            // Repulsive force: k/d^2 pointing from obstacle toward drone
+            double obs_x = range * std::cos(angle_body);
+            double obs_y = range * std::sin(angle_body);
+            double rep_mag = repulsion_gain_ / (range * range);
+
+            frep_x_body += rep_mag * (-obs_x / range);
+            frep_y_body += rep_mag * (-obs_y / range);
+
+            // Store for visualization
+            active_obstacle_points_.push_back({obs_x, obs_y});
+        }
+
+        // Clamp total repulsive force magnitude
+        double frep_mag = std::sqrt(frep_x_body * frep_x_body + frep_y_body * frep_y_body);
+        if (frep_mag > max_repulsion_force_) {
+            double scale = max_repulsion_force_ / frep_mag;
+            frep_x_body *= scale;
+            frep_y_body *= scale;
+        }
+
+        // Store body-frame repulsion for visualization
+        frep_body_x_ = frep_x_body;
+        frep_body_y_ = frep_y_body;
+
+        // Convert F_rep from body to NED
+        frep_x_ned = cos_yaw * frep_x_body - sin_yaw * frep_y_body;
+        frep_y_ned = sin_yaw * frep_x_body + cos_yaw * frep_y_body;
+    }
+
+    void publish_obstacle_markers(double fcmd_x_body, double fcmd_y_body)
+    {
+        visualization_msgs::msg::MarkerArray markers;
+        auto stamp = this->now();
+
+        // Marker 0: Hemicircle boundary (LINE_STRIP in base_link frame)
+        {
+            visualization_msgs::msg::Marker m;
+            m.header.frame_id = "base_link";
+            m.header.stamp = stamp;
+            m.ns = "obstacle_avoidance";
+            m.id = 0;
+            m.type = visualization_msgs::msg::Marker::LINE_STRIP;
+            m.action = visualization_msgs::msg::Marker::ADD;
+            m.scale.x = 0.02;  // line width
+            m.color.r = 1.0; m.color.g = 1.0; m.color.b = 0.0; m.color.a = 0.5;
+            m.lifetime = rclcpp::Duration::from_seconds(0.2);
+
+            // Draw arc from -90 to +90 deg relative to F_ext direction
+            const int arc_points = 30;
+            for (int i = 0; i <= arc_points; i++) {
+                double angle = hemicircle_angle_ - M_PI / 2.0
+                             + M_PI * static_cast<double>(i) / arc_points;
+                geometry_msgs::msg::Point p;
+                p.x = hemicircle_radius_ * std::cos(angle);
+                p.y = hemicircle_radius_ * std::sin(angle);
+                p.z = 0.0;
+                m.points.push_back(p);
+            }
+            markers.markers.push_back(m);
+        }
+
+        // Marker 1: Active obstacle points (SPHERE_LIST in base_link frame)
+        {
+            visualization_msgs::msg::Marker m;
+            m.header.frame_id = "base_link";
+            m.header.stamp = stamp;
+            m.ns = "obstacle_avoidance";
+            m.id = 1;
+            m.type = visualization_msgs::msg::Marker::SPHERE_LIST;
+            m.action = visualization_msgs::msg::Marker::ADD;
+            m.scale.x = 0.03; m.scale.y = 0.03; m.scale.z = 0.03;
+            m.color.r = 1.0; m.color.g = 0.0; m.color.b = 0.0; m.color.a = 0.8;
+            m.lifetime = rclcpp::Duration::from_seconds(0.2);
+
+            for (const auto& pt : active_obstacle_points_) {
+                geometry_msgs::msg::Point p;
+                p.x = pt[0]; p.y = pt[1]; p.z = 0.0;
+                m.points.push_back(p);
+            }
+            markers.markers.push_back(m);
+        }
+
+        // Marker 2: F_rep arrow (body frame, red)
+        {
+            double frep_mag = std::sqrt(frep_body_x_ * frep_body_x_ + frep_body_y_ * frep_body_y_);
+            visualization_msgs::msg::Marker m;
+            m.header.frame_id = "base_link";
+            m.header.stamp = stamp;
+            m.ns = "obstacle_avoidance";
+            m.id = 2;
+            m.type = visualization_msgs::msg::Marker::ARROW;
+            m.lifetime = rclcpp::Duration::from_seconds(0.2);
+
+            if (frep_mag > 0.01) {
+                m.action = visualization_msgs::msg::Marker::ADD;
+                geometry_msgs::msg::Point start, end;
+                start.x = 0; start.y = 0; start.z = 0;
+                // Scale: 0.1 m per 1 N
+                end.x = frep_body_x_ * 0.1;
+                end.y = frep_body_y_ * 0.1;
+                end.z = 0;
+                m.points.push_back(start);
+                m.points.push_back(end);
+                m.scale.x = 0.03;  // shaft diameter
+                m.scale.y = 0.05;  // head diameter
+                m.scale.z = 0.0;
+                m.color.r = 1.0; m.color.g = 0.2; m.color.b = 0.2; m.color.a = 0.9;
+            } else {
+                m.action = visualization_msgs::msg::Marker::DELETE;
+            }
+            markers.markers.push_back(m);
+        }
+
+        // Marker 3: F_cmd arrow (body frame, cyan)
+        {
+            double fcmd_mag = std::sqrt(fcmd_x_body * fcmd_x_body + fcmd_y_body * fcmd_y_body);
+            visualization_msgs::msg::Marker m;
+            m.header.frame_id = "base_link";
+            m.header.stamp = stamp;
+            m.ns = "obstacle_avoidance";
+            m.id = 3;
+            m.type = visualization_msgs::msg::Marker::ARROW;
+            m.lifetime = rclcpp::Duration::from_seconds(0.2);
+
+            if (fcmd_mag > 0.01) {
+                m.action = visualization_msgs::msg::Marker::ADD;
+                geometry_msgs::msg::Point start, end;
+                start.x = 0; start.y = 0; start.z = 0;
+                end.x = fcmd_x_body * 0.1;
+                end.y = fcmd_y_body * 0.1;
+                end.z = 0;
+                m.points.push_back(start);
+                m.points.push_back(end);
+                m.scale.x = 0.03;
+                m.scale.y = 0.05;
+                m.scale.z = 0.0;
+                m.color.r = 0.0; m.color.g = 1.0; m.color.b = 1.0; m.color.a = 0.9;
+            } else {
+                m.action = visualization_msgs::msg::Marker::DELETE;
+            }
+            markers.markers.push_back(m);
+        }
+
+        obstacle_marker_pub_->publish(markers);
+    }
+
+    void publish_force_marker(double fx_ned, double fy_ned)
+    {
+        try {
+            auto tf = tf_buffer_->lookupTransform(world_frame_, drone_frame_, tf2::TimePointZero);
+
+            // Convert NED force to OptiTrack frame (same convention as force_estimator_node)
+            double fx_ot = -fx_ned;
+            double fy_ot = fy_ned;
+            double force_mag = std::sqrt(fx_ot * fx_ot + fy_ot * fy_ot);
+
+            visualization_msgs::msg::MarkerArray markers;
+            auto stamp = this->now();
+            auto lifetime = rclcpp::Duration::from_seconds(0.5);
+
+            constexpr double min_force = 0.3;
+            if (force_mag < min_force) {
+                // Show "Steady" text, delete arrow
+                visualization_msgs::msg::Marker arrow;
+                arrow.header.stamp = stamp;
+                arrow.header.frame_id = world_frame_;
+                arrow.ns = "force_estimate";
+                arrow.id = 0;
+                arrow.action = visualization_msgs::msg::Marker::DELETE;
+                markers.markers.push_back(arrow);
+
+                visualization_msgs::msg::Marker text;
+                text.header.stamp = stamp;
+                text.header.frame_id = world_frame_;
+                text.ns = "force_estimate";
+                text.id = 1;
+                text.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+                text.action = visualization_msgs::msg::Marker::ADD;
+                text.lifetime = lifetime;
+                text.scale.z = 0.15;
+                text.color.r = 1.0; text.color.g = 1.0; text.color.b = 0.0; text.color.a = 1.0;
+                text.text = "Steady";
+                text.pose.position.x = tf.transform.translation.x;
+                text.pose.position.y = tf.transform.translation.y;
+                text.pose.position.z = tf.transform.translation.z + 0.3;
+                markers.markers.push_back(text);
+            } else {
+                // Show arrow, delete text
+                visualization_msgs::msg::Marker text;
+                text.header.stamp = stamp;
+                text.header.frame_id = world_frame_;
+                text.ns = "force_estimate";
+                text.id = 1;
+                text.action = visualization_msgs::msg::Marker::DELETE;
+                markers.markers.push_back(text);
+
+                visualization_msgs::msg::Marker arrow;
+                arrow.header.stamp = stamp;
+                arrow.header.frame_id = world_frame_;
+                arrow.ns = "force_estimate";
+                arrow.id = 0;
+                arrow.type = visualization_msgs::msg::Marker::ARROW;
+                arrow.action = visualization_msgs::msg::Marker::ADD;
+                arrow.lifetime = lifetime;
+
+                geometry_msgs::msg::Point start;
+                start.x = tf.transform.translation.x;
+                start.y = tf.transform.translation.y;
+                start.z = tf.transform.translation.z;
+
+                constexpr double arrow_scale = 0.1;
+                double arrow_len = force_mag * arrow_scale;
+
+                geometry_msgs::msg::Point end;
+                end.x = start.x + fx_ot * arrow_scale;
+                end.y = start.y + fy_ot * arrow_scale;
+                end.z = start.z;
+
+                arrow.points.push_back(start);
+                arrow.points.push_back(end);
+
+                double head_len = std::min(0.05, arrow_len * 0.3);
+                arrow.scale.x = 0.03;
+                arrow.scale.y = 0.06;
+                arrow.scale.z = head_len;
+
+                arrow.color.r = 0.0;
+                arrow.color.g = 1.0;
+                arrow.color.b = 0.0;
+                arrow.color.a = 0.8;
+
+                markers.markers.push_back(arrow);
+            }
+
+            force_marker_pub_->publish(markers);
+        } catch (const tf2::TransformException &) {
+            // Skip if TF not available
+        }
+    }
+
+    void clear_obstacle_markers()
+    {
+        visualization_msgs::msg::MarkerArray markers;
+        for (int id = 0; id < 4; id++) {
+            visualization_msgs::msg::Marker m;
+            m.header.frame_id = "base_link";
+            m.header.stamp = this->now();
+            m.ns = "obstacle_avoidance";
+            m.id = id;
+            m.action = visualization_msgs::msg::Marker::DELETE;
+            markers.markers.push_back(m);
+        }
+        obstacle_marker_pub_->publish(markers);
+    }
+
     void control_loop()
     {
         const double dt = 0.02;
         auto now = this->now();
 
         // Get current pose
-        double cur_x, cur_y, cur_z, cur_yaw;
+        double cur_x = 0, cur_y = 0, cur_z = 0, cur_yaw = 0;
         bool have_pose = get_current_pose_ned(cur_x, cur_y, cur_z, cur_yaw);
 
         // Get attitude and update force estimate
         double roll, pitch;
         get_attitude(roll, pitch);
 
-        if (have_pose && kf_initialized_) {
-            update_force_estimate(cur_x, cur_y, roll, pitch);
-        } else if (have_pose && !kf_initialized_) {
-            // Initialize KF state with current position
-            kf_x_(0) = cur_x;
-            kf_x_(2) = cur_y;
-            kf_initialized_ = true;
-            RCLCPP_INFO(this->get_logger(), "Kalman filter initialized at (%.3f, %.3f)", cur_x, cur_y);
-        }
+        // if (have_pose && kf_initialized_) {
+        //     update_force_estimate(cur_x, cur_y, roll, pitch);
+        // } else if (have_pose && !kf_initialized_) {
+        //     // Initialize KF state with current position
+        //     kf_x_(0) = cur_x;
+        //     kf_x_(2) = cur_y;
+        //     kf_initialized_ = true;
+        //     RCLCPP_INFO(this->get_logger(), "Kalman filter initialized at (%.3f, %.3f)", cur_x, cur_y);
+        // }
 
         double fx = estimated_force_x_;
         double fy = estimated_force_y_;
@@ -365,6 +757,7 @@ private:
 
             case Mode::POSITION_HOLD:
             {
+                // Transition uses raw F_ext only (not F_cmd), per spec
                 if (force_mag > force_deadzone_) {
                     RCLCPP_INFO(this->get_logger(),
                         "Force detected (%.2f N), switching to velocity mode", force_mag);
@@ -372,6 +765,7 @@ private:
                 } else {
                     publish_position_control_mode();
                     publish_position_setpoint(hold_x_, hold_y_, hold_z_, hold_yaw_);
+                    clear_obstacle_markers();
                     break;
                 }
             }
@@ -380,17 +774,45 @@ private:
             case Mode::VELOCITY:
             {
                 if (force_mag > force_deadzone_) {
-                    // Drive IN SAME direction as force (compliant - follow the push)
-                    double dir_x = fx / force_mag;
-                    double dir_y = fy / force_mag;
-                    double effective_force = force_mag - force_deadzone_;
-                    double target_speed = std::min(effective_force * velocity_gain_, max_velocity_);
+                    // Compute obstacle repulsion (does NOT affect KF estimates)
+                    double frep_x = 0.0, frep_y = 0.0;
+                    if (obstacle_avoidance_enabled_ && have_scan_) {
+                        compute_obstacle_repulsion(fx, fy, cur_yaw, frep_x, frep_y);
+                    }
 
-                    cmd_vx_ = dir_x * target_speed;
-                    cmd_vy_ = dir_y * target_speed;
+                    // Superpose: F_cmd = F_ext + F_rep
+                    double fcmd_x = fx + frep_x;
+                    double fcmd_y = fy + frep_y;
+                    double fcmd_mag = std::sqrt(fcmd_x * fcmd_x + fcmd_y * fcmd_y);
+
+                    if (fcmd_mag > 0.01) {
+                        double dir_x = fcmd_x / fcmd_mag;
+                        double dir_y = fcmd_y / fcmd_mag;
+                        double effective_force = std::max(fcmd_mag - force_deadzone_, 0.0);
+                        double target_speed = std::min(effective_force * velocity_gain_, max_velocity_);
+
+                        cmd_vx_ = dir_x * target_speed;
+                        cmd_vy_ = dir_y * target_speed;
+                    } else {
+                        // F_ext and F_rep cancel out - stop
+                        cmd_vx_ = 0.0;
+                        cmd_vy_ = 0.0;
+                    }
+
+                    last_frep_x_ = frep_x;
+                    last_frep_y_ = frep_y;
 
                     publish_velocity_control_mode();
                     publish_velocity_setpoint(cmd_vx_, cmd_vy_, hold_z_);
+
+                    // Publish visualization (compute F_cmd in body frame for markers)
+                    if (obstacle_avoidance_enabled_) {
+                        double cos_yaw = std::cos(cur_yaw);
+                        double sin_yaw = std::sin(cur_yaw);
+                        double fcmd_body_x =  cos_yaw * fcmd_x + sin_yaw * fcmd_y;
+                        double fcmd_body_y = -sin_yaw * fcmd_x + cos_yaw * fcmd_y;
+                        publish_obstacle_markers(fcmd_body_x, fcmd_body_y);
+                    }
 
                 } else {
                     double cmd_speed = std::sqrt(cmd_vx_ * cmd_vx_ + cmd_vy_ * cmd_vy_);
@@ -421,9 +843,18 @@ private:
                         publish_position_control_mode();
                         publish_position_setpoint(hold_x_, hold_y_, hold_z_, hold_yaw_);
                     }
+
+                    last_frep_x_ = 0.0;
+                    last_frep_y_ = 0.0;
+                    clear_obstacle_markers();
                 }
                 break;
             }
+        }
+
+        // Publish force marker every tick (matches force_estimator_node behavior)
+        if (kf_initialized_) {
+            publish_force_marker(fx, fy);
         }
 
         // Log at ~2 Hz
@@ -442,9 +873,12 @@ private:
 
             if (mode_ == Mode::VELOCITY) {
                 double speed = std::sqrt(cmd_vx_ * cmd_vx_ + cmd_vy_ * cmd_vy_);
+                double frep_mag = std::sqrt(last_frep_x_ * last_frep_x_ + last_frep_y_ * last_frep_y_);
                 RCLCPP_INFO(this->get_logger(),
-                    "[%s] vel=(%.2f, %.2f) spd=%.2f | force=(%.2f, %.2f) mag=%.2f N",
-                    mode_str, cmd_vx_, cmd_vy_, speed, fx, fy, force_mag);
+                    "[%s] vel=(%.2f, %.2f) spd=%.2f | Fext=(%.2f, %.2f) %.2fN | Frep=(%.2f, %.2f) %.2fN",
+                    mode_str, cmd_vx_, cmd_vy_, speed,
+                    fx, fy, force_mag,
+                    last_frep_x_, last_frep_y_, frep_mag);
             } else {
                 RCLCPP_INFO(this->get_logger(),
                     "[%s] pos=(%.3f, %.3f, %.3f) | force=(%.2f, %.2f) mag=%.2f N",
@@ -532,11 +966,15 @@ private:
     // Subscribers
     rclcpp::Subscription<VehicleStatus>::SharedPtr vehicle_status_sub_;
     rclcpp::Subscription<VehicleOdometry>::SharedPtr odom_sub_;
+    rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
+    rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr force_sub_;
 
     // Publishers
     rclcpp::Publisher<OffboardControlMode>::SharedPtr offboard_control_mode_pub_;
     rclcpp::Publisher<TrajectorySetpoint>::SharedPtr trajectory_setpoint_pub_;
     rclcpp::Publisher<VehicleCommand>::SharedPtr vehicle_command_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr obstacle_marker_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr force_marker_pub_;
 
     // Timer
     rclcpp::TimerBase::SharedPtr timer_;
@@ -554,6 +992,10 @@ private:
     VehicleOdometry latest_odom_;
     bool have_odom_ = false;
 
+    // LiDAR data
+    sensor_msgs::msg::LaserScan latest_scan_;
+    bool have_scan_ = false;
+
     // Force estimate
     double estimated_force_x_ = 0.0;
     double estimated_force_y_ = 0.0;
@@ -567,6 +1009,25 @@ private:
     double takeoff_altitude_;
     double altitude_threshold_;
     double mass_;
+
+    // Obstacle avoidance parameters
+    bool obstacle_avoidance_enabled_;
+    double repulsion_gain_;
+    double min_obstacle_distance_;
+    double max_obstacle_distance_;
+    double hemicircle_radius_base_;
+    double hemicircle_radius_gain_;
+    double max_repulsion_force_;
+    int scan_downsample_factor_;
+
+    // Obstacle avoidance state
+    double last_frep_x_ = 0.0;
+    double last_frep_y_ = 0.0;
+    double frep_body_x_ = 0.0;
+    double frep_body_y_ = 0.0;
+    double hemicircle_radius_ = 0.0;
+    double hemicircle_angle_ = 0.0;
+    std::vector<std::array<double, 2>> active_obstacle_points_;
 
     // PX4 state
     uint8_t arming_state_ = VehicleStatus::ARMING_STATE_DISARMED;
