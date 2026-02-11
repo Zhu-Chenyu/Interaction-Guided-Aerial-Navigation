@@ -14,7 +14,7 @@
  * 5. POSITION_HOLD: Holds current position until external force detected
  * 6. VELOCITY: Drives drone in force direction, decelerates when force removed
  *
- * Obstacle avoidance:
+ * Obstacle avoidance (when enabled):
  * - Considers obstacles in a hemicircle facing F_ext direction
  * - Each obstacle generates repulsive force F = k/d^2 toward the drone
  * - F_cmd = F_ext + F_rep (superposition)
@@ -28,7 +28,6 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
-#include <geometry_msgs/msg/wrench_stamped.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 
@@ -122,7 +121,7 @@ public:
         vehicle_command_pub_ = this->create_publisher<VehicleCommand>(
             "/fmu/in/vehicle_command", qos_pub);
 
-        // Visualization publishers (volatile QoS for RViz compatibility)
+        // Visualization publishers
         obstacle_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
             "/obstacle_markers", 10);
         force_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
@@ -154,14 +153,6 @@ public:
                 latest_scan_ = *msg;
                 have_scan_ = true;
             });
-        
-        force_sub_ = this->create_subscription<WrenchStamped>(
-            "/force_estimate", 10,
-            [this](const geometry_msgs::msg::WrenchStamped::SharedPtr msg) {
-                estimated_force_x_ = msg.wrench.force.x;
-                estimated_force_y_ = msg.wrench.force.y;
-            }
-        )
 
         // Control loop at 50 Hz
         timer_ = this->create_wall_timer(
@@ -265,14 +256,27 @@ private:
     {
         try {
             auto transform = tf_buffer_->lookupTransform(world_frame_, drone_frame_, tf2::TimePointZero);
-            x = transform.transform.translation.x;
-            y = -transform.transform.translation.y;
-            z = -transform.transform.translation.z;
+            // OptiTrack (X-back, Y-right, Z-up) -> NED
+            x = -transform.transform.translation.x;  // -backward = north
+            y = transform.transform.translation.y;   // right = east
+            z = -transform.transform.translation.z;  // -up = down
 
-            auto& q = transform.transform.rotation;
-            double siny_cosp = 2.0 * (q.w * q.z + q.x * q.y);
-            double cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
-            yaw = -std::atan2(siny_cosp, cosy_cosp);
+            // Yaw from PX4 EKF output to match PX4's internal state exactly.
+            // This avoids yaw conflicts between the setpoint and PX4's estimate.
+            if (have_odom_) {
+                double qw = latest_odom_.q[0];
+                double qx = latest_odom_.q[1];
+                double qy = latest_odom_.q[2];
+                double qz = latest_odom_.q[3];
+                yaw = std::atan2(2.0 * (qw * qz + qx * qy),
+                                 1.0 - 2.0 * (qy * qy + qz * qz));
+            } else {
+                // Fallback to TF-derived yaw before PX4 odom is available
+                auto& q = transform.transform.rotation;
+                yaw = std::atan2(
+                    -2.0 * (q.w * q.x - q.y * q.z),
+                    -2.0 * (q.w * q.y + q.x * q.z));
+            }
             return true;
         } catch (const tf2::TransformException&) {
             return false;
@@ -440,7 +444,6 @@ private:
             m.color.r = 1.0; m.color.g = 1.0; m.color.b = 0.0; m.color.a = 0.5;
             m.lifetime = rclcpp::Duration::from_seconds(0.2);
 
-            // Draw arc from -90 to +90 deg relative to F_ext direction
             const int arc_points = 30;
             for (int i = 0; i <= arc_points; i++) {
                 double angle = hemicircle_angle_ - M_PI / 2.0
@@ -490,14 +493,13 @@ private:
                 m.action = visualization_msgs::msg::Marker::ADD;
                 geometry_msgs::msg::Point start, end;
                 start.x = 0; start.y = 0; start.z = 0;
-                // Scale: 0.1 m per 1 N
                 end.x = frep_body_x_ * 0.1;
                 end.y = frep_body_y_ * 0.1;
                 end.z = 0;
                 m.points.push_back(start);
                 m.points.push_back(end);
-                m.scale.x = 0.03;  // shaft diameter
-                m.scale.y = 0.05;  // head diameter
+                m.scale.x = 0.03;
+                m.scale.y = 0.05;
                 m.scale.z = 0.0;
                 m.color.r = 1.0; m.color.g = 0.2; m.color.b = 0.2; m.color.a = 0.9;
             } else {
@@ -544,9 +546,9 @@ private:
         try {
             auto tf = tf_buffer_->lookupTransform(world_frame_, drone_frame_, tf2::TimePointZero);
 
-            // Convert NED force to OptiTrack frame (same convention as force_estimator_node)
-            double fx_ot = -fx_ned;
-            double fy_ot = fy_ned;
+            // Convert NED force to OptiTrack frame: x_ot = -x_ned, y_ot = y_ned
+            double fx_ot = -fx_ned;  // NED north -> OptiTrack backward (negate)
+            double fy_ot = fy_ned;   // NED east -> OptiTrack right (same)
             double force_mag = std::sqrt(fx_ot * fx_ot + fy_ot * fy_ot);
 
             visualization_msgs::msg::MarkerArray markers;
@@ -657,19 +659,19 @@ private:
         double cur_x = 0, cur_y = 0, cur_z = 0, cur_yaw = 0;
         bool have_pose = get_current_pose_ned(cur_x, cur_y, cur_z, cur_yaw);
 
-        // Get attitude and update force estimate
+        // Get attitude and update force estimate (only when KF is initialized)
         double roll, pitch;
         get_attitude(roll, pitch);
 
-        // if (have_pose && kf_initialized_) {
-        //     update_force_estimate(cur_x, cur_y, roll, pitch);
-        // } else if (have_pose && !kf_initialized_) {
-        //     // Initialize KF state with current position
-        //     kf_x_(0) = cur_x;
-        //     kf_x_(2) = cur_y;
-        //     kf_initialized_ = true;
-        //     RCLCPP_INFO(this->get_logger(), "Kalman filter initialized at (%.3f, %.3f)", cur_x, cur_y);
-        // }
+        if (have_pose && kf_initialized_) {
+            update_force_estimate(cur_x, cur_y, roll, pitch);
+        } else if (have_pose && !kf_initialized_) {
+            // Initialize KF state with current position
+            kf_x_(0) = cur_x;
+            kf_x_(2) = cur_y;
+            kf_initialized_ = true;
+            RCLCPP_INFO(this->get_logger(), "Kalman filter initialized at (%.3f, %.3f)", cur_x, cur_y);
+        }
 
         double fx = estimated_force_x_;
         double fy = estimated_force_y_;
@@ -750,6 +752,21 @@ private:
                     hold_y_ = cur_y;
                     hold_z_ = target_z_;
                     hold_yaw_ = cur_yaw;
+
+                    // Reset KF: clear takeoff transients so phantom forces don't trigger velocity mode
+                    kf_x_(0) = cur_x;
+                    kf_x_(1) = 0.0;  // vx
+                    kf_x_(2) = cur_y;
+                    kf_x_(3) = 0.0;  // vy
+                    kf_x_(4) = 0.0;  // Fx
+                    kf_x_(5) = 0.0;  // Fy
+                    kf_P_ = Eigen::Matrix<double, 6, 6>::Identity();
+                    kf_P_(4, 4) = 10.0;
+                    kf_P_(5, 5) = 10.0;
+                    estimated_force_x_ = 0.0;
+                    estimated_force_y_ = 0.0;
+                    RCLCPP_INFO(this->get_logger(), "KF reset for hover");
+
                     mode_ = Mode::POSITION_HOLD;
                 }
                 break;
@@ -803,7 +820,7 @@ private:
                     last_frep_y_ = frep_y;
 
                     publish_velocity_control_mode();
-                    publish_velocity_setpoint(cmd_vx_, cmd_vy_, hold_z_);
+                    publish_velocity_setpoint(cmd_vx_, cmd_vy_, hold_z_, hold_yaw_);
 
                     // Publish visualization (compute F_cmd in body frame for markers)
                     if (obstacle_avoidance_enabled_) {
@@ -824,7 +841,7 @@ private:
                         cmd_vy_ *= scale;
 
                         publish_velocity_control_mode();
-                        publish_velocity_setpoint(cmd_vx_, cmd_vy_, hold_z_);
+                        publish_velocity_setpoint(cmd_vx_, cmd_vy_, hold_z_, hold_yaw_);
 
                     } else {
                         cmd_vx_ = 0.0;
@@ -852,7 +869,7 @@ private:
             }
         }
 
-        // Publish force marker every tick (matches force_estimator_node behavior)
+        // Publish force marker when KF is running
         if (kf_initialized_) {
             publish_force_marker(fx, fy);
         }
@@ -915,7 +932,7 @@ private:
         offboard_control_mode_pub_->publish(msg);
     }
 
-    void publish_velocity_setpoint(double vx, double vy, double z)
+    void publish_velocity_setpoint(double vx, double vy, double z, double yaw)
     {
         TrajectorySetpoint msg{};
         msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
@@ -931,7 +948,7 @@ private:
         msg.jerk[0] = std::nanf("");
         msg.jerk[1] = std::nanf("");
         msg.jerk[2] = std::nanf("");
-        msg.yaw = std::nanf("");
+        msg.yaw = yaw;
         msg.yawspeed = std::nanf("");
         trajectory_setpoint_pub_->publish(msg);
     }
@@ -967,7 +984,6 @@ private:
     rclcpp::Subscription<VehicleStatus>::SharedPtr vehicle_status_sub_;
     rclcpp::Subscription<VehicleOdometry>::SharedPtr odom_sub_;
     rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
-    rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr force_sub_;
 
     // Publishers
     rclcpp::Publisher<OffboardControlMode>::SharedPtr offboard_control_mode_pub_;

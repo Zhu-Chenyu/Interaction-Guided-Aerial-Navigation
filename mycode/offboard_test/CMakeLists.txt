@@ -27,16 +27,6 @@ target_link_libraries(offboard_test_node PUBLIC
   tf2_ros::tf2_ros
 )
 
-add_executable(force_estimator_node src/force_estimator_node.cpp)
-target_link_libraries(force_estimator_node PUBLIC
-  ${geometry_msgs_TARGETS}
-  ${px4_msgs_TARGETS}
-  ${visualization_msgs_TARGETS}
-  rclcpp::rclcpp
-  tf2_ros::tf2_ros
-  Eigen3::Eigen
-)
-
 add_executable(force_drive_node src/force_drive_node.cpp)
 target_link_libraries(force_drive_node PUBLIC
   ${geometry_msgs_TARGETS}
@@ -59,7 +49,6 @@ target_link_libraries(vision_bridge_node PUBLIC
 # Install
 install(TARGETS
   offboard_test_node
-  force_estimator_node
   force_drive_node
   vision_bridge_node
   DESTINATION lib/${PROJECT_NAME}

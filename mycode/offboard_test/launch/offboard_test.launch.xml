@@ -31,19 +31,7 @@
     <param name="max_position_variance" value="$(var max_position_variance)"/>
   </node> -->
 
-  <!-- Force estimator (Kalman filter for horizontal external forces) -->
-  <node pkg="offboard_test" exec="force_estimator_node" name="force_estimator" output="screen">
-    <param name="world_frame" value="$(var world_frame)"/>
-    <param name="drone_frame" value="$(var drone_frame)"/>
-    <param name="drone_mass" value="1.56"/>
-    <param name="hover_thrust_normalized" value="0.5"/>
-    <param name="process_noise_pos" value="0.01"/>
-    <param name="process_noise_vel" value="0.1"/>
-    <param name="process_noise_force" value="1.0"/>
-    <param name="measurement_noise" value="0.001"/>
-  </node>
-
-  <!-- Force drive node (drives drone in direction of external force) -->
+  <!-- Force drive node (drives drone in direction of external force, integrated KF) -->
   <node pkg="offboard_test" exec="force_drive_node" name="force_drive" output="screen">
     <param name="world_frame" value="$(var world_frame)"/>
     <param name="drone_frame" value="$(var drone_frame)"/>
@@ -55,7 +43,7 @@
     <param name="decel_rate" value="0.5"/>
     <param name="hold_speed_threshold" value="0.05"/>
     <!-- Obstacle avoidance parameters -->
-    <param name="obstacle_avoidance_enabled" value="true"/>
+    <param name="obstacle_avoidance_enabled" value="false"/>
     <param name="repulsion_gain" value="0.5"/>
     <param name="min_obstacle_distance" value="0.15"/>
     <param name="max_obstacle_distance" value="2.0"/>
