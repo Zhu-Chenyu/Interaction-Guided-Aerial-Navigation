@@ -226,10 +226,13 @@ private:
         const double g = 9.81;
         double T = mass_ * g;  // Assume hover thrust
 
-        // Control input: thrust contribution to velocity
+        // Control input: thrust contribution to horizontal velocity (NED)
+        // From R_body_to_NED * [0, 0, -T]:
+        //   fx_NED = -T * sin(pitch) * cos(roll)  →  positive pitch (nose up) → south
+        //   fy_NED =  T * sin(roll)                →  positive roll (right wing down) → east
         Eigen::Matrix<double, 6, 1> Bu = Eigen::Matrix<double, 6, 1>::Zero();
-        Bu(1) = T * std::sin(pitch) / mass_ * dt;
-        Bu(3) = -T * std::sin(roll) * std::cos(pitch) / mass_ * dt;
+        Bu(1) = -T * std::sin(pitch) * std::cos(roll) / mass_ * dt;
+        Bu(3) =  T * std::sin(roll) / mass_ * dt;
 
         // Predict
         Eigen::Matrix<double, 6, 1> x_pred = kf_F_ * kf_x_ + Bu;
@@ -256,9 +259,9 @@ private:
     {
         try {
             auto transform = tf_buffer_->lookupTransform(world_frame_, drone_frame_, tf2::TimePointZero);
-            // OptiTrack (X-back, Y-right, Z-up) -> NED
-            x = -transform.transform.translation.x;  // -backward = north
-            y = transform.transform.translation.y;   // right = east
+            // OptiTrack world FLU (X-forward, Y-left, Z-up) -> NED
+            x = transform.transform.translation.x;   // forward = north
+            y = -transform.transform.translation.y;  // -left = east
             z = -transform.transform.translation.z;  // -up = down
 
             // Yaw from PX4 EKF output to match PX4's internal state exactly.
@@ -272,10 +275,12 @@ private:
                                  1.0 - 2.0 * (qy * qy + qz * qz));
             } else {
                 // Fallback to TF-derived yaw before PX4 odom is available
+                // OptiTrack FLU -> NED quaternion: q_ned = (w, x, -y, -z)
+                // NED yaw = atan2(2*(w*z + x*y), 1 - 2*(y^2 + z^2)) with substituted signs
                 auto& q = transform.transform.rotation;
                 yaw = std::atan2(
-                    -2.0 * (q.w * q.x - q.y * q.z),
-                    -2.0 * (q.w * q.y + q.x * q.z));
+                    -2.0 * (q.w * q.z + q.x * q.y),
+                     1.0 - 2.0 * (q.y * q.y + q.z * q.z));
             }
             return true;
         } catch (const tf2::TransformException&) {
@@ -354,17 +359,21 @@ private:
             return;
         }
 
-        // Convert F_ext from NED to body frame (yaw rotation only)
+        // Convert F_ext from NED to base_link frame.
+        // Step 1: NED -> FRD body (yaw rotation)
         double cos_yaw = std::cos(yaw_ned);
         double sin_yaw = std::sin(yaw_ned);
-        double fx_body =  cos_yaw * fx_ned + sin_yaw * fy_ned;
-        double fy_body = -sin_yaw * fx_ned + cos_yaw * fy_ned;
-        double f_ext_mag = std::sqrt(fx_body * fx_body + fy_body * fy_body);
+        double fx_frd =  cos_yaw * fx_ned + sin_yaw * fy_ned;
+        double fy_frd = -sin_yaw * fx_ned + cos_yaw * fy_ned;
+        // Step 2: FRD -> base_link (x_base = -x_frd backward, y_base = y_frd right)
+        double fx_base = -fx_frd;
+        double fy_base =  fy_frd;
+        double f_ext_mag = std::sqrt(fx_base * fx_base + fy_base * fy_base);
 
         if (f_ext_mag < force_deadzone_) return;
 
-        // Hemicircle parameters
-        double f_ext_angle = std::atan2(fy_body, fx_body);
+        // Hemicircle parameters (angle in base_link frame)
+        double f_ext_angle = std::atan2(fy_base, fx_base);
         hemicircle_radius_ = std::min(
             hemicircle_radius_base_ + hemicircle_radius_gain_ * f_ext_mag,
             max_obstacle_distance_);
@@ -390,8 +399,10 @@ private:
             // Skip obstacles beyond hemicircle radius
             if (range > hemicircle_radius_) continue;
 
-            // Scan point angle in body frame (laser frame aligned with body)
-            double angle_body = scan.angle_min + i * scan.angle_increment;
+            // Scan point angle: convert from laser frame to body frame
+            // (laser has yaw = -π/2 relative to base_link)
+            double angle_laser = scan.angle_min + i * scan.angle_increment;
+            double angle_body = normalize_angle(angle_laser - M_PI / 2.0);
 
             // Hemicircle check: is angle within +-90 deg of F_ext direction?
             double angle_diff = normalize_angle(angle_body - f_ext_angle);
@@ -421,9 +432,11 @@ private:
         frep_body_x_ = frep_x_body;
         frep_body_y_ = frep_y_body;
 
-        // Convert F_rep from body to NED
-        frep_x_ned = cos_yaw * frep_x_body - sin_yaw * frep_y_body;
-        frep_y_ned = sin_yaw * frep_x_body + cos_yaw * frep_y_body;
+        // Convert F_rep from base_link to NED
+        // base_link -> FRD: fx_frd = -fx_base, fy_frd = fy_base
+        // FRD -> NED: R^T rotation
+        frep_x_ned = -cos_yaw * frep_x_body - sin_yaw * frep_y_body;
+        frep_y_ned = -sin_yaw * frep_x_body + cos_yaw * frep_y_body;
     }
 
     void publish_obstacle_markers(double fcmd_x_body, double fcmd_y_body)
@@ -546,9 +559,9 @@ private:
         try {
             auto tf = tf_buffer_->lookupTransform(world_frame_, drone_frame_, tf2::TimePointZero);
 
-            // Convert NED force to OptiTrack frame: x_ot = -x_ned, y_ot = y_ned
-            double fx_ot = -fx_ned;  // NED north -> OptiTrack backward (negate)
-            double fy_ot = fy_ned;   // NED east -> OptiTrack right (same)
+            // Convert NED force to OptiTrack world FLU: x_ot = x_ned, y_ot = -y_ned
+            double fx_ot = fx_ned;   // NED north -> OptiTrack forward (same)
+            double fy_ot = -fy_ned;  // NED east -> OptiTrack left (negate)
             double force_mag = std::sqrt(fx_ot * fx_ot + fy_ot * fy_ot);
 
             visualization_msgs::msg::MarkerArray markers;
@@ -702,6 +715,9 @@ private:
 
             case Mode::SENDING_SETPOINTS:
             {
+                // Keep tracking yaw as PX4's EKF converges to vision data
+                if (have_pose) home_yaw_ = cur_yaw;
+
                 publish_position_control_mode();
                 publish_position_setpoint(home_x_, home_y_, home_z_, home_yaw_);
 
@@ -717,6 +733,9 @@ private:
 
             case Mode::ARMING:
             {
+                // Keep tracking yaw as PX4's EKF converges to vision data
+                if (have_pose) home_yaw_ = cur_yaw;
+
                 publish_position_control_mode();
                 publish_position_setpoint(home_x_, home_y_, home_z_, home_yaw_);
 
@@ -822,11 +841,12 @@ private:
                     publish_velocity_control_mode();
                     publish_velocity_setpoint(cmd_vx_, cmd_vy_, hold_z_, hold_yaw_);
 
-                    // Publish visualization (compute F_cmd in body frame for markers)
+                    // Publish visualization (compute F_cmd in base_link frame for markers)
                     if (obstacle_avoidance_enabled_) {
                         double cos_yaw = std::cos(cur_yaw);
                         double sin_yaw = std::sin(cur_yaw);
-                        double fcmd_body_x =  cos_yaw * fcmd_x + sin_yaw * fcmd_y;
+                        // NED -> FRD -> base_link (negate x)
+                        double fcmd_body_x = -(cos_yaw * fcmd_x + sin_yaw * fcmd_y);
                         double fcmd_body_y = -sin_yaw * fcmd_x + cos_yaw * fcmd_y;
                         publish_obstacle_markers(fcmd_body_x, fcmd_body_y);
                     }

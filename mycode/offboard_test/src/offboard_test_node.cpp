@@ -324,17 +324,17 @@ private:
         try {
             auto transform = tf_buffer_->lookupTransform(world_frame_, drone_frame_, tf2::TimePointZero);
 
-            // Convert from OptiTrack (X-back, Y-right, Z-up) to PX4 NED
-            current_x_ = -transform.transform.translation.x;  // -backward = north
-            current_y_ = transform.transform.translation.y;   // right = east
+            // Convert from OptiTrack world FLU (X-forward, Y-left, Z-up) to PX4 NED
+            current_x_ = transform.transform.translation.x;   // forward = north
+            current_y_ = -transform.transform.translation.y;  // -left = east
             current_z_ = -transform.transform.translation.z;  // -up = down
 
-            // Extract NED yaw from OptiTrack quaternion (BRU world, LUF body)
-            // Derived from q_ned = R_world * q_ot * R_body^T
+            // Extract NED yaw from OptiTrack quaternion (FLU world, FLU body)
+            // q_ned = (w, x, -y, -z), then standard NED yaw extraction
             auto& q = transform.transform.rotation;
             current_yaw_ = std::atan2(
-                -2.0 * (q.w * q.x - q.y * q.z),
-                -2.0 * (q.w * q.y + q.x * q.z));
+                -2.0 * (q.w * q.z + q.x * q.y),
+                 1.0 - 2.0 * (q.y * q.y + q.z * q.z));
 
             return true;
         } catch (const tf2::TransformException& ex) {

@@ -186,8 +186,8 @@ private:
         // 4. Predict step
         const double dt = 0.02;
         Eigen::Matrix<double, 6, 1> Bu = Eigen::Matrix<double, 6, 1>::Zero();
-        Bu(1) = T * std::sin(pitch) / mass_ * dt;
-        Bu(3) = -T * std::sin(roll) * std::cos(pitch) / mass_ * dt;
+        Bu(1) = -T * std::sin(pitch) * std::cos(roll) / mass_ * dt;
+        Bu(3) =  T * std::sin(roll) / mass_ * dt;
 
         Eigen::Matrix<double, 6, 1> x_pred = F_ * x_ + Bu;
         Eigen::Matrix<double, 6, 6> P_pred = F_ * P_ * F_.transpose() + Q_;
@@ -238,9 +238,9 @@ private:
             text.color.a = 1.0;
             text.text = "Steady";
 
-            // Convert force from NED to OptiTrack frame (negate Y)
-            double fx_ot = -x_(4);
-            double fy_ot = x_(5);
+            // Convert force from NED to OptiTrack world FLU: x_ot = x_ned, y_ot = -y_ned
+            double fx_ot = x_(4);
+            double fy_ot = -x_(5);
             double force_mag = std::sqrt(fx_ot * fx_ot + fy_ot * fy_ot);
 
             // Hide arrow when force is negligible
@@ -314,7 +314,7 @@ private:
             auto transform = tf_buffer_->lookupTransform(
                 world_frame_, drone_frame_, tf2::TimePointZero);
 
-            // Convert OptiTrack to NED: negate Y (same as offboard_test_node)
+            // Convert OptiTrack world FLU to NED: x_ned = x_ot, y_ned = -y_ot
             px_ned = transform.transform.translation.x;
             py_ned = -transform.transform.translation.y;
             return true;

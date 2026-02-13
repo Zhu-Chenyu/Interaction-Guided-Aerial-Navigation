@@ -69,23 +69,23 @@ private:
 
         msg.pose_frame = VehicleOdometry::POSE_FRAME_NED;
 
-        // Position: OptiTrack (X-back, Y-right, Z-up) -> NED (X-north, Y-east, Z-down)
-        msg.position[0] = -tf.transform.translation.x;  // -backward = forward/north
-        msg.position[1] = tf.transform.translation.y;   // right = east
+        // Position: OptiTrack world FLU (X-forward, Y-left, Z-up) -> NED
+        msg.position[0] = tf.transform.translation.x;   // forward = north
+        msg.position[1] = -tf.transform.translation.y;  // -left = east
         msg.position[2] = -tf.transform.translation.z;  // -up = down
 
-        // Quaternion: OptiTrack world BRU + body LUF -> PX4 world NED + body FRD
-        // R_world = diag(-1, 1, -1) maps BRU->NED
-        // R_body = [[0,0,1],[−1,0,0],[0,−1,0]] maps LUF->FRD
-        // q_ned = R_world * q_ot * R_body^T
+        // Quaternion: OptiTrack world FLU + body FLU -> PX4 world NED + body FRD
+        // R_world = diag(1,-1,-1) maps FLU->NED
+        // R_body  = diag(1,-1,-1) maps FLU->FRD
+        // Combined effect on quaternion: q_ned = (w, x, -y, -z)
         double w = tf.transform.rotation.w;
         double x = tf.transform.rotation.x;
         double y = tf.transform.rotation.y;
         double z = tf.transform.rotation.z;
-        msg.q[0] =  0.5 * ( w + x - y - z);
-        msg.q[1] =  0.5 * ( w - x - y + z);
-        msg.q[2] =  0.5 * ( w - x + y - z);
-        msg.q[3] = -0.5 * ( w + x + y + z);
+        msg.q[0] =  w;
+        msg.q[1] =  x;
+        msg.q[2] = -y;
+        msg.q[3] = -z;
 
         // No velocity from mocap
         msg.velocity_frame = VehicleOdometry::VELOCITY_FRAME_UNKNOWN;
@@ -112,22 +112,22 @@ private:
 
         odom_pub_->publish(msg);
 
-        // Debug: publish NED data converted back to OptiTrack frame as a TF.
+        // Debug: publish NED data converted back to OptiTrack FLU frame as a TF.
         // If conversion is correct, "imu_link_ned_check" overlaps "imu_link" in RViz.
-        // Inverse position: x_ot = -x_ned, y_ot = y_ned, z_ot = -z_ned
-        // Inverse quaternion: q_ot = R_world^T * q_ned * R_body  (same formula since R^T=R for these)
+        // Inverse position: x_ot = x_ned, y_ot = -y_ned, z_ot = -z_ned
+        // Inverse quaternion: q_ot = (w, x, -y, -z) (same transform, self-inverse)
         // geometry_msgs::msg::TransformStamped debug_tf;
         // debug_tf.header.stamp = tf.header.stamp;
         // debug_tf.header.frame_id = world_frame_;
         // debug_tf.child_frame_id = "imu_link_ned_check";
-        // debug_tf.transform.translation.x = -msg.position[0];
-        // debug_tf.transform.translation.y = msg.position[1];
+        // debug_tf.transform.translation.x = msg.position[0];
+        // debug_tf.transform.translation.y = -msg.position[1];
         // debug_tf.transform.translation.z = -msg.position[2];
         // double nw = msg.q[0], nx = msg.q[1], ny = msg.q[2], nz = msg.q[3];
-        // debug_tf.transform.rotation.w =  0.5 * ( nw + nx - ny - nz);
-        // debug_tf.transform.rotation.x =  0.5 * ( nw - nx - ny + nz);
-        // debug_tf.transform.rotation.y =  0.5 * ( nw - nx + ny - nz);
-        // debug_tf.transform.rotation.z = -0.5 * ( nw + nx + ny + nz);
+        // debug_tf.transform.rotation.w = nw;
+        // debug_tf.transform.rotation.x = nx;
+        // debug_tf.transform.rotation.y = -ny;
+        // debug_tf.transform.rotation.z = -nz;
         // tf_broadcaster_->sendTransform(debug_tf);
     }
 
