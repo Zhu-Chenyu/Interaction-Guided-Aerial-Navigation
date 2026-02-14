@@ -365,9 +365,9 @@ private:
         double sin_yaw = std::sin(yaw_ned);
         double fx_frd =  cos_yaw * fx_ned + sin_yaw * fy_ned;
         double fy_frd = -sin_yaw * fx_ned + cos_yaw * fy_ned;
-        // Step 2: FRD -> base_link (x_base = -x_frd backward, y_base = y_frd right)
-        double fx_base = -fx_frd;
-        double fy_base =  fy_frd;
+        // Step 2: FRD -> base_link FLU (x_base = x_frd forward, y_base = -y_frd left)
+        double fx_base =  fx_frd;
+        double fy_base = -fy_frd;
         double f_ext_mag = std::sqrt(fx_base * fx_base + fy_base * fy_base);
 
         if (f_ext_mag < force_deadzone_) return;
@@ -400,9 +400,8 @@ private:
             if (range > hemicircle_radius_) continue;
 
             // Scan point angle: convert from laser frame to body frame
-            // (laser has yaw = -π/2 relative to base_link)
             double angle_laser = scan.angle_min + i * scan.angle_increment;
-            double angle_body = normalize_angle(angle_laser - M_PI / 2.0);
+            double angle_body = normalize_angle(angle_laser);
 
             // Hemicircle check: is angle within +-90 deg of F_ext direction?
             double angle_diff = normalize_angle(angle_body - f_ext_angle);
@@ -432,11 +431,11 @@ private:
         frep_body_x_ = frep_x_body;
         frep_body_y_ = frep_y_body;
 
-        // Convert F_rep from base_link to NED
-        // base_link -> FRD: fx_frd = -fx_base, fy_frd = fy_base
+        // Convert F_rep from base_link FLU to NED
+        // base_link FLU -> FRD: fx_frd = fx_base, fy_frd = -fy_base
         // FRD -> NED: R^T rotation
-        frep_x_ned = -cos_yaw * frep_x_body - sin_yaw * frep_y_body;
-        frep_y_ned = -sin_yaw * frep_x_body + cos_yaw * frep_y_body;
+        frep_x_ned = cos_yaw * frep_x_body - sin_yaw * frep_y_body;
+        frep_y_ned = sin_yaw * frep_x_body + cos_yaw * frep_y_body;
     }
 
     void publish_obstacle_markers(double fcmd_x_body, double fcmd_y_body)
@@ -845,9 +844,9 @@ private:
                     if (obstacle_avoidance_enabled_) {
                         double cos_yaw = std::cos(cur_yaw);
                         double sin_yaw = std::sin(cur_yaw);
-                        // NED -> FRD -> base_link (negate x)
-                        double fcmd_body_x = -(cos_yaw * fcmd_x + sin_yaw * fcmd_y);
-                        double fcmd_body_y = -sin_yaw * fcmd_x + cos_yaw * fcmd_y;
+                        // NED -> FRD -> base_link FLU (negate y)
+                        double fcmd_body_x = cos_yaw * fcmd_x + sin_yaw * fcmd_y;
+                        double fcmd_body_y = sin_yaw * fcmd_x - cos_yaw * fcmd_y;
                         publish_obstacle_markers(fcmd_body_x, fcmd_body_y);
                     }
 
