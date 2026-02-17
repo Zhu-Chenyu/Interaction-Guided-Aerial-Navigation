@@ -52,46 +52,46 @@ public:
     ForceDriveNode() : Node("force_drive_node")
     {
         // Parameters
-        this->declare_parameter<double>("force_deadzone", 1.0);
-        this->declare_parameter<double>("velocity_gain", 0.5);
-        this->declare_parameter<double>("max_velocity", 1.0);
-        this->declare_parameter<double>("decel_rate", 0.5);
-        this->declare_parameter<double>("hold_speed_threshold", 0.05);
-        this->declare_parameter<double>("takeoff_altitude", 0.2);
-        this->declare_parameter<double>("altitude_threshold", 0.05);
-        this->declare_parameter<double>("drone_mass", 1.56);
-        this->declare_parameter<std::string>("world_frame", "optitrack");
-        this->declare_parameter<std::string>("drone_frame", "imu_link");
+        declare_parameter<double>("force_deadzone", 1.0);
+        declare_parameter<double>("velocity_gain", 0.5);
+        declare_parameter<double>("max_velocity", 1.0);
+        declare_parameter<double>("decel_rate", 0.5);
+        declare_parameter<double>("hold_speed_threshold", 0.05);
+        declare_parameter<double>("takeoff_altitude", 0.2);
+        declare_parameter<double>("altitude_threshold", 0.05);
+        declare_parameter<double>("drone_mass", 1.56);
+        declare_parameter<std::string>("world_frame", "optitrack");
+        declare_parameter<std::string>("drone_frame", "imu_link");
 
         // Obstacle avoidance parameters
-        this->declare_parameter<bool>("obstacle_avoidance_enabled", true);
-        this->declare_parameter<double>("repulsion_gain", 0.5);
-        this->declare_parameter<double>("min_obstacle_distance", 0.15);
-        this->declare_parameter<double>("max_obstacle_distance", 2.0);
-        this->declare_parameter<double>("hemicircle_radius_base", 0.5);
-        this->declare_parameter<double>("hemicircle_radius_gain", 0.3);
-        this->declare_parameter<double>("max_repulsion_force", 5.0);
-        this->declare_parameter<int>("scan_downsample_factor", 4);
+        declare_parameter<bool>("obstacle_avoidance_enabled", true);
+        declare_parameter<double>("repulsion_gain", 0.5);
+        declare_parameter<double>("min_obstacle_distance", 0.15);
+        declare_parameter<double>("max_obstacle_distance", 2.0);
+        declare_parameter<double>("hemicircle_radius_base", 0.5);
+        declare_parameter<double>("hemicircle_radius_gain", 0.3);
+        declare_parameter<double>("max_repulsion_force", 5.0);
+        declare_parameter<int>("scan_downsample_factor", 4);
 
-        force_deadzone_ = this->get_parameter("force_deadzone").as_double();
-        velocity_gain_ = this->get_parameter("velocity_gain").as_double();
-        max_velocity_ = this->get_parameter("max_velocity").as_double();
-        decel_rate_ = this->get_parameter("decel_rate").as_double();
-        hold_speed_threshold_ = this->get_parameter("hold_speed_threshold").as_double();
-        takeoff_altitude_ = this->get_parameter("takeoff_altitude").as_double();
-        altitude_threshold_ = this->get_parameter("altitude_threshold").as_double();
-        mass_ = this->get_parameter("drone_mass").as_double();
-        world_frame_ = this->get_parameter("world_frame").as_string();
-        drone_frame_ = this->get_parameter("drone_frame").as_string();
+        force_deadzone_ = get_parameter("force_deadzone").as_double();
+        velocity_gain_ = get_parameter("velocity_gain").as_double();
+        max_velocity_ = get_parameter("max_velocity").as_double();
+        decel_rate_ = get_parameter("decel_rate").as_double();
+        hold_speed_threshold_ = get_parameter("hold_speed_threshold").as_double();
+        takeoff_altitude_ = get_parameter("takeoff_altitude").as_double();
+        altitude_threshold_ = get_parameter("altitude_threshold").as_double();
+        mass_ = get_parameter("drone_mass").as_double();
+        world_frame_ = get_parameter("world_frame").as_string();
+        drone_frame_ = get_parameter("drone_frame").as_string();
 
-        obstacle_avoidance_enabled_ = this->get_parameter("obstacle_avoidance_enabled").as_bool();
-        repulsion_gain_ = this->get_parameter("repulsion_gain").as_double();
-        min_obstacle_distance_ = this->get_parameter("min_obstacle_distance").as_double();
-        max_obstacle_distance_ = this->get_parameter("max_obstacle_distance").as_double();
-        hemicircle_radius_base_ = this->get_parameter("hemicircle_radius_base").as_double();
-        hemicircle_radius_gain_ = this->get_parameter("hemicircle_radius_gain").as_double();
-        max_repulsion_force_ = this->get_parameter("max_repulsion_force").as_double();
-        scan_downsample_factor_ = this->get_parameter("scan_downsample_factor").as_int();
+        obstacle_avoidance_enabled_ = get_parameter("obstacle_avoidance_enabled").as_bool();
+        repulsion_gain_ = get_parameter("repulsion_gain").as_double();
+        min_obstacle_distance_ = get_parameter("min_obstacle_distance").as_double();
+        max_obstacle_distance_ = get_parameter("max_obstacle_distance").as_double();
+        hemicircle_radius_base_ = get_parameter("hemicircle_radius_base").as_double();
+        hemicircle_radius_gain_ = get_parameter("hemicircle_radius_gain").as_double();
+        max_repulsion_force_ = get_parameter("max_repulsion_force").as_double();
+        scan_downsample_factor_ = get_parameter("scan_downsample_factor").as_int();
         if (scan_downsample_factor_ < 1) scan_downsample_factor_ = 1;
 
         // Initialize Kalman filter
@@ -403,14 +403,14 @@ private:
             double angle_laser = scan.angle_min + i * scan.angle_increment;
             double angle_body = normalize_angle(angle_laser);
 
-            // Hemicircle check: is angle within +-90 deg of F_ext direction?
+            // Hemicircle check: only consider obstacles within ±90° of movement direction
             double angle_diff = normalize_angle(angle_body - f_ext_angle);
             if (std::abs(angle_diff) > M_PI / 2.0) continue;
 
             // Repulsive force: k/d^2 pointing from obstacle toward drone
             double obs_x = range * std::cos(angle_body);
             double obs_y = range * std::sin(angle_body);
-            double rep_mag = repulsion_gain_ / (range * range);
+            double rep_mag = repulsion_gain_ / (range);
 
             frep_x_body += rep_mag * (-obs_x / range);
             frep_y_body += rep_mag * (-obs_y / range);
@@ -432,10 +432,10 @@ private:
         frep_body_y_ = frep_y_body;
 
         // Convert F_rep from base_link FLU to NED
-        // base_link FLU -> FRD: fx_frd = fx_base, fy_frd = -fy_base
-        // FRD -> NED: R^T rotation
-        frep_x_ned = cos_yaw * frep_x_body - sin_yaw * frep_y_body;
-        frep_y_ned = sin_yaw * frep_x_body + cos_yaw * frep_y_body;
+        // FLU->FRD: (fx, -fy), then FRD->NED via R(yaw)
+        // Combined: fx_ned = cos*fx + sin*fy, fy_ned = sin*fx - cos*fy
+        frep_x_ned = cos_yaw * frep_x_body + sin_yaw * frep_y_body;
+        frep_y_ned = sin_yaw * frep_x_body - cos_yaw * frep_y_body;
     }
 
     void publish_obstacle_markers(double fcmd_x_body, double fcmd_y_body)
@@ -792,7 +792,7 @@ private:
 
             case Mode::POSITION_HOLD:
             {
-                // Transition uses raw F_ext only (not F_cmd), per spec
+                // Transition to velocity mode only on external force
                 if (force_mag > force_deadzone_) {
                     RCLCPP_INFO(this->get_logger(),
                         "Force detected (%.2f N), switching to velocity mode", force_mag);
