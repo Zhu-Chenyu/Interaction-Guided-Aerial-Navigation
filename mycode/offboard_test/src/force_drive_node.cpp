@@ -410,7 +410,7 @@ private:
             // Repulsive force: k/d^2 pointing from obstacle toward drone
             double obs_x = range * std::cos(angle_body);
             double obs_y = range * std::sin(angle_body);
-            double rep_mag = repulsion_gain_ / (range);
+            double rep_mag = repulsion_gain_ / (range*range);
 
             frep_x_body += rep_mag * (-obs_x / range);
             frep_y_body += rep_mag * (-obs_y / range);
