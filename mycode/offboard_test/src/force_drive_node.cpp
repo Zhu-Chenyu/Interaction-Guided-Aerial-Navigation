@@ -224,7 +224,10 @@ private:
     {
         const double dt = 0.02;
         const double g = 9.81;
-        double T = mass_ * g;  // Assume hover thrust
+        // T such that vertical component T*cos(roll)*cos(pitch) = mass*g
+        double cos_rp = std::cos(roll) * std::cos(pitch);
+        if (std::abs(cos_rp) < 0.1) cos_rp = std::copysign(0.1, cos_rp);
+        double T = mass_ * g / cos_rp;
 
         // Control input: thrust contribution to horizontal velocity (NED)
         // From R_body_to_NED * [0, 0, -T]:

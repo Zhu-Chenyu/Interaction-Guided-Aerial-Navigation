@@ -5,7 +5,7 @@
   <!-- Parameters for OptiTrack frame names -->
   <arg name="world_frame" default="optitrack" description="OptiTrack world frame"/>
   <arg name="drone_frame" default="imu_link" description="OptiTrack drone rigid body frame"/>
-  <arg name="takeoff_height" default="0.2" description="Takeoff height in meters"/>
+  <arg name="takeoff_height" default="0.15" description="Takeoff height in meters"/>
   <arg name="hover_duration" default="10.0" description="Hover duration in seconds"/>
   <arg name="validation_duration" default="3.0" description="Pose validation duration in seconds"/>
   <arg name="max_position_variance" default="0.01" description="Max allowed position variance during validation"/>
@@ -44,10 +44,10 @@
     <param name="hold_speed_threshold" value="0.05"/>
     <!-- Obstacle avoidance parameters -->
     <param name="obstacle_avoidance_enabled" value="true"/>
-    <param name="repulsion_gain" value="0.3"/>
+    <param name="repulsion_gain" value="0.2"/>
     <param name="min_obstacle_distance" value="0.15"/>
     <param name="max_obstacle_distance" value="2.0"/>
-    <param name="hemicircle_radius_base" value="1.2"/>
+    <param name="hemicircle_radius_base" value="0.7"/>
     <param name="hemicircle_radius_gain" value="0.3"/>
     <param name="max_repulsion_force" value="3.0"/>
     <param name="scan_downsample_factor" value="4"/>
