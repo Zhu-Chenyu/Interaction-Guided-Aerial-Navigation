@@ -220,7 +220,7 @@ private:
         kf_P_(5, 5) = 10.0;
     }
 
-    void update_force_estimate(double px_ned, double py_ned, double roll, double pitch)
+    void update_force_estimate(double px_ned, double py_ned, double roll, double pitch, double yaw)
     {
         const double dt = 0.02;
         const double g = 9.81;
@@ -230,12 +230,15 @@ private:
         double T = mass_ * g / cos_rp;
 
         // Control input: thrust contribution to horizontal velocity (NED)
-        // From R_body_to_NED * [0, 0, -T]:
-        //   fx_NED = -T * sin(pitch) * cos(roll)  →  positive pitch (nose up) → south
-        //   fy_NED =  T * sin(roll)                →  positive roll (right wing down) → east
+        // Full rotation: R_body_to_NED[:,2] gives the body-z axis in NED.
+        // Thrust [0,0,-T] in body maps to NED horizontal:
+        //   fx_NED = -T/m * (cos(yaw)*sin(pitch)*cos(roll) + sin(yaw)*sin(roll))
+        //   fy_NED = -T/m * (sin(yaw)*sin(pitch)*cos(roll) - cos(yaw)*sin(roll))
+        double cos_yaw = std::cos(yaw);
+        double sin_yaw = std::sin(yaw);
         Eigen::Matrix<double, 6, 1> Bu = Eigen::Matrix<double, 6, 1>::Zero();
-        Bu(1) = -T * std::sin(pitch) * std::cos(roll) / mass_ * dt;
-        Bu(3) =  T * std::sin(roll) / mass_ * dt;
+        Bu(1) = -T / mass_ * (cos_yaw * std::sin(pitch) * std::cos(roll) + sin_yaw * std::sin(roll)) * dt;
+        Bu(3) = -T / mass_ * (sin_yaw * std::sin(pitch) * std::cos(roll) - cos_yaw * std::sin(roll)) * dt;
 
         // Predict
         Eigen::Matrix<double, 6, 1> x_pred = kf_F_ * kf_x_ + Bu;
@@ -679,7 +682,7 @@ private:
         get_attitude(roll, pitch);
 
         if (have_pose && kf_initialized_) {
-            update_force_estimate(cur_x, cur_y, roll, pitch);
+            update_force_estimate(cur_x, cur_y, roll, pitch, cur_yaw);
         } else if (have_pose && !kf_initialized_) {
             // Initialize KF state with current position
             kf_x_(0) = cur_x;

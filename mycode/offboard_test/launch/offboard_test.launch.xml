@@ -44,11 +44,11 @@
     <param name="hold_speed_threshold" value="0.05"/>
     <!-- Obstacle avoidance parameters -->
     <param name="obstacle_avoidance_enabled" value="true"/>
-    <param name="repulsion_gain" value="0.2"/>
+    <param name="repulsion_gain" value="0.1"/>
     <param name="min_obstacle_distance" value="0.15"/>
     <param name="max_obstacle_distance" value="2.0"/>
-    <param name="hemicircle_radius_base" value="0.7"/>
-    <param name="hemicircle_radius_gain" value="0.3"/>
+    <param name="hemicircle_radius_base" value="0.6"/>
+    <param name="hemicircle_radius_gain" value="0.2"/>
     <param name="max_repulsion_force" value="3.0"/>
     <param name="scan_downsample_factor" value="4"/>
   </node>
