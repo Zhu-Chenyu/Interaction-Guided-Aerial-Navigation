@@ -51,6 +51,7 @@
     <param name="hemicircle_radius_gain" value="0.2"/>
     <param name="max_repulsion_force" value="3.0"/>
     <param name="obstacle_velocity_damping" value="2.0"/>
+    <param name="omni_obstacle_distance" value="0.5"/>
     <param name="scan_downsample_factor" value="4"/>
   </node>
 

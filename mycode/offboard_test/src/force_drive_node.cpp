@@ -72,6 +72,7 @@ public:
         declare_parameter<double>("hemicircle_radius_gain", 0.3);
         declare_parameter<double>("max_repulsion_force", 5.0);
         declare_parameter<double>("obstacle_velocity_damping", 2.0);
+        declare_parameter<double>("omni_obstacle_distance", 0.5);
         declare_parameter<int>("scan_downsample_factor", 4);
 
         force_deadzone_ = get_parameter("force_deadzone").as_double();
@@ -93,6 +94,7 @@ public:
         hemicircle_radius_gain_ = get_parameter("hemicircle_radius_gain").as_double();
         max_repulsion_force_ = get_parameter("max_repulsion_force").as_double();
         obstacle_velocity_damping_ = get_parameter("obstacle_velocity_damping").as_double();
+        omni_obstacle_distance_ = get_parameter("omni_obstacle_distance").as_double();
         scan_downsample_factor_ = get_parameter("scan_downsample_factor").as_int();
         if (scan_downsample_factor_ < 1) scan_downsample_factor_ = 1;
 
@@ -344,9 +346,13 @@ private:
     /**
      * Compute repulsive force from LiDAR obstacles.
      *
-     * Works in body frame for scan processing, converts result to NED.
-     * Only considers obstacles in a hemicircle facing the F_ext direction.
-     * Each obstacle contributes k/d^2 repulsion toward the drone.
+     * Two passes, both in body frame:
+     *  1. Hemicircle pass: ±90° cone in F_ext direction, up to hemicircle_radius_.
+     *     Handles directional avoidance of obstacles ahead in the movement direction.
+     *  2. Omnidirectional pass: full 360°, up to omni_obstacle_distance_.
+     *     Catches side/rear obstacles when the drone sidesteps to avoid a front obstacle.
+     * Both passes accumulate into the same repulsion vector (overlap is allowed and
+     * results in stronger repulsion very close to the drone, which is desirable).
      *
      * Architecture constraint: this output must NOT feed back into update_force_estimate().
      */
@@ -424,6 +430,30 @@ private:
             frep_y_body += rep_mag * (-obs_y / range);
 
             // Store for visualization
+            active_obstacle_points_.push_back({obs_x, obs_y});
+        }
+
+        // Omnidirectional close-proximity pass: full 360°, catches side/rear obstacles
+        // that the drone may be sidestepping into while avoiding a front obstacle.
+        for (int i = 0; i < n; i += scan_downsample_factor_) {
+            double range = scan.ranges[i];
+
+            if (std::isnan(range) || std::isinf(range)) continue;
+            if (range < scan.range_min || range > scan.range_max) continue;
+            if (range > omni_obstacle_distance_) continue;  // only the safety bubble
+
+            if (range < min_obstacle_distance_) range = min_obstacle_distance_;
+
+            double angle_laser = scan.angle_min + i * scan.angle_increment;
+            double angle_body = normalize_angle(angle_laser);
+
+            double obs_x = range * std::cos(angle_body);
+            double obs_y = range * std::sin(angle_body);
+            double rep_mag = repulsion_gain_ / (range * range);
+
+            frep_x_body += rep_mag * (-obs_x / range);
+            frep_y_body += rep_mag * (-obs_y / range);
+
             active_obstacle_points_.push_back({obs_x, obs_y});
         }
 
@@ -1069,6 +1099,7 @@ private:
     double hemicircle_radius_gain_;
     double max_repulsion_force_;
     double obstacle_velocity_damping_;
+    double omni_obstacle_distance_;
     int scan_downsample_factor_;
 
     // Obstacle avoidance state

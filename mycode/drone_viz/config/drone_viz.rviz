@@ -13,7 +13,7 @@ Panels:
         - /MarkerArray1
         - /LaserScan1
       Splitter Ratio: 0.5
-    Tree Height: 775
+    Tree Height: 361
   - Class: rviz_common/Views
     Expanded:
       - /Current View1
@@ -155,7 +155,7 @@ Visualization Manager:
       Enabled: true
       Name: ForceMarker
       Namespaces:
-        {}
+        force_estimate: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -167,7 +167,7 @@ Visualization Manager:
       Enabled: true
       Name: ObstacleMarkers
       Namespaces:
-        {}
+        obstacle_avoidance: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -202,7 +202,7 @@ Visualization Manager:
       Enabled: true
       Invert Rainbow: false
       Max Color: 255; 255; 255
-      Max Intensity: 43
+      Max Intensity: 54
       Min Color: 0; 0; 0
       Min Intensity: 0
       Name: LaserScan
@@ -242,25 +242,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 7.2145185470581055
+      Distance: 11.352185249328613
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.14228858053684235
-        Y: -0.06153726577758789
-        Z: -0.3308967053890228
+        X: 0.01845918782055378
+        Y: -0.32684561610221863
+        Z: -0.35380029678344727
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.5097970366477966
+      Pitch: 1.4797961711883545
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 5.664540767669678
+      Yaw: 4.714521408081055
     Saved: ~
 Window Geometry:
   Displays:
