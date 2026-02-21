@@ -71,6 +71,7 @@ public:
         declare_parameter<double>("hemicircle_radius_base", 0.5);
         declare_parameter<double>("hemicircle_radius_gain", 0.3);
         declare_parameter<double>("max_repulsion_force", 5.0);
+        declare_parameter<double>("obstacle_velocity_damping", 2.0);
         declare_parameter<int>("scan_downsample_factor", 4);
 
         force_deadzone_ = get_parameter("force_deadzone").as_double();
@@ -91,6 +92,7 @@ public:
         hemicircle_radius_base_ = get_parameter("hemicircle_radius_base").as_double();
         hemicircle_radius_gain_ = get_parameter("hemicircle_radius_gain").as_double();
         max_repulsion_force_ = get_parameter("max_repulsion_force").as_double();
+        obstacle_velocity_damping_ = get_parameter("obstacle_velocity_damping").as_double();
         scan_downsample_factor_ = get_parameter("scan_downsample_factor").as_int();
         if (scan_downsample_factor_ < 1) scan_downsample_factor_ = 1;
 
@@ -821,9 +823,16 @@ private:
                         compute_obstacle_repulsion(fx, fy, cur_yaw, frep_x, frep_y);
                     }
 
-                    // Superpose: F_cmd = F_ext + F_rep
-                    double fcmd_x = fx + frep_x;
-                    double fcmd_y = fy + frep_y;
+                    // Velocity damping: opposes cmd_v proportional to repulsion magnitude.
+                    // Dissipates oscillation energy when drone is between close obstacles.
+                    double frep_mag = std::sqrt(frep_x * frep_x + frep_y * frep_y);
+                    double damp_scale = std::min(frep_mag / max_repulsion_force_, 1.0);
+                    double fdamp_x = -obstacle_velocity_damping_ * damp_scale * cmd_vx_;
+                    double fdamp_y = -obstacle_velocity_damping_ * damp_scale * cmd_vy_;
+
+                    // Superpose: F_cmd = F_ext + F_rep + F_damp
+                    double fcmd_x = fx + frep_x + fdamp_x;
+                    double fcmd_y = fy + frep_y + fdamp_y;
                     double fcmd_mag = std::sqrt(fcmd_x * fcmd_x + fcmd_y * fcmd_y);
 
                     if (fcmd_mag > 0.01) {
@@ -1059,6 +1068,7 @@ private:
     double hemicircle_radius_base_;
     double hemicircle_radius_gain_;
     double max_repulsion_force_;
+    double obstacle_velocity_damping_;
     int scan_downsample_factor_;
 
     // Obstacle avoidance state
