@@ -201,6 +201,9 @@ source install/setup.bash
 
 # Launch everything (OptiTrack, visualization, vision bridge, force drive node)
 ros2 launch offboard_test offboard_test.launch.xml
+
+# Start LiDAR on RPi (This project uses RPLiDAR C1M1-R2)
+ros2 launch sllidar_ros2 sllidar_c1_launch.py
 ```
 
 ### Key Parameters (`offboard_test.launch.xml`)
