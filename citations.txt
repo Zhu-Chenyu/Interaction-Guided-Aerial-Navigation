@@ -1,4 +1,25 @@
-Collaborator:
-Jeff Zhang - The optitrack package is editted based on Jeff Zhang's code.
+Collaborators
+-------------
+Jeff Zhang
+  The OptiTrack ROS 2 publisher package is derived from Jeff Zhang's original implementation.
 
-[1] PX4 Documentation - px4_msgs_minimal package is editted based on PX4 documentation. https://github.com/PX4/px4_msgs?tab=readme-ov-file#
+
+Software and Packages
+---------------------
+[1] PX4 Autopilot Development Team. "px4_msgs." GitHub.
+    https://github.com/PX4/px4_msgs
+    The px4_msgs package included in this repository is adapted from the official PX4 message
+    definitions. Used under the BSD 3-Clause License.
+
+[2] Slamtec. "sllidar_ros2." GitHub.
+    https://github.com/Slamtec/sllidar_ros2
+    The sllidar_ros2 package is the official SLAMTEC ROS 2 driver for RPLidar sensors,
+    included without modification. Used under the BSD License.
+
+[3] Guennebaud, G., Jacob, B., et al. "Eigen v3." 2010.
+    https://eigen.tuxfamily.org
+    Used for Kalman filter matrix operations. Used under the Mozilla Public License 2.0.
+
+[4] eProsima. "Micro XRCE-DDS." GitHub.
+    https://github.com/eProsima/Micro-XRCE-DDS
+    DDS bridge used to communicate between the Raspberry Pi companion computer and PX4.
