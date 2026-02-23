@@ -37,24 +37,25 @@ A tilted quadrotor that is not accelerating horizontally must be experiencing an
 ![Model Diagram](images/ModelDiagram.jpg)
 
 At quasi-steady-state, the force balance gives:
-- **Vertical:** `T·cos(θ) = G` — vertical thrust equals gravity
-- **Horizontal:** `T·sin(θ) = m·a + E` — horizontal thrust overcomes inertia and external force E
+- **Vertical:** `T·sin(θ) = G` — vertical thrust equals gravity
+- **Horizontal:** `T·cos(θ) = m·a + E` — horizontal thrust overcomes inertia and external force E
 
 By observing position through OptiTrack and knowing the thrust command, any residual horizontal acceleration is attributed to an external force.
 
 ### Frame Conventions
 
-The system bridges three coordinate frames:
+The system uses four coordinate frames, all visible on the physical drone:
 
 ![Drone Frames](images/DroneFrames.jpg)
 
-| Frame | Convention | Used For |
-|-------|------------|----------|
-| **NED** (Pixhawk/PX4) | X=North, Y=East, Z=Down | State estimation, trajectory setpoints |
-| **FLU** (base\_link / ROS) | X=Forward, Y=Left, Z=Up | LiDAR scan processing, body-frame forces |
-| **OptiTrack world** | X=Forward, Y=Left, Z=Up | Position observations via TF |
+| Frame | Convention | Role |
+|-------|------------|------|
+| **Pixhawk** | NED — X=North, Y=East, Z=Down | PX4 internal state, trajectory setpoints |
+| **Drone rigid body** (`imu_link`) | FLU — X=Forward, Y=Left, Z=Up | OptiTrack tracking frame; KF position observations |
+| **base_footprint** | FLU — X=Forward, Y=Left, Z=Up | Ground-projected drone pose in the TF tree |
+| **LiDAR** (`laser`) | FLU — X=Forward, Y=Left, Z=Up | 2D scan frame; rigidly aligned with body (no rotation) |
 
-Conversion chain (FLU → NED), using yaw angle ψ:
+All ROS frames use FLU. Only the Pixhawk uses NED. Conversion chain (body FLU → NED), using yaw ψ:
 ```
 FLU → FRD:  x_frd =  x_flu,   y_frd = -y_flu
 FRD → NED:  x_ned =  cos(ψ)·x_frd + sin(ψ)·y_frd
@@ -69,13 +70,13 @@ Because PX4 produces horizontal motion by tilting the drone, pitch and roll are 
 
 ![Pitch to X Error](images/pitch_to_xe.png)
 
-Correlation = 0.73. Pitch tracks the X-axis error, confirming the model: when the drone is pushed forward, PX4 pitches nose-down to accelerate, producing a position error that grows until it matches the commanded velocity.
+Correlation = 0.732. Pitch tracks the X-axis error, confirming the model: when the drone is pushed forward, PX4 pitches nose-down to accelerate, producing a position error that grows until it matches the commanded velocity.
 
 **Roll correlates with Y position error (NED):**
 
 ![Roll to Y Error](images/roll_to_ye.png)
 
-Correlation = −0.78 (negative due to the FRD→NED sign convention). Roll tracks Y-axis error with the expected sign flip, consistent with the frame rotation.
+Correlation = −0.777 (negative due to the FRD→NED sign convention). Roll tracks Y-axis error with the expected sign flip, consistent with the frame rotation.
 
 ---
 
@@ -110,15 +111,19 @@ The estimated `[Fx, Fy]` drives the velocity setpoint. Obstacle repulsion forces
 
 Repulsive forces from the RPLidar scan are superimposed on the estimated external force using a potential field approach.
 
+![Potential Field](images/Potential%20field.jpg)
+
+The diagram shows the full force superposition: the orange arc is the hemicircle detection zone facing F_ext (red). Obstacles inside generate avoidance forces (teal and purple arrows) pushing the drone away. Velocity damping (pink) opposes the current velocity when repulsion is active. The command force (blue dashed) is the vector sum of all contributions.
+
 ### Two-Pass Scan Processing
 
 **Pass 1 — Hemicircle (directional):**
-Scans a ±90° cone in the direction of F\_ext, up to a radius that scales with force magnitude (`hemicircle_radius_base + hemicircle_radius_gain × |F_ext|`). Ensures obstacles in the intended direction of travel are detected well in advance. Visualized as the yellow arc in RViz.
+Scans a ±90° cone in the direction of F\_ext (the orange arc), up to a radius that scales with force magnitude (`hemicircle_radius_base + hemicircle_radius_gain × |F_ext|`). Ensures obstacles in the intended direction of travel are detected well in advance.
 
 **Pass 2 — Omnidirectional safety bubble:**
-Scans the full 360° for obstacles within a fixed close-range radius (`omni_obstacle_distance`, default 0.5 m). Catches side and rear obstacles when the drone sidesteps away from a front obstacle — preventing collisions from blind spots.
+Scans the full 360° for obstacles within a fixed close-range radius (`omni_obstacle_distance`, default 0.5 m). Catches side and rear obstacles when the drone sidesteps away from a front obstacle — preventing blind-spot collisions.
 
-Both passes accumulate into the same repulsion vector. Overlap near the drone (very close front obstacles) is intentional and produces stronger repulsion.
+Both passes accumulate into the same repulsion vector. Overlap near the drone (very close front obstacles) is intentional and produces stronger repulsion exactly where it is needed most.
 
 ### Force Superposition
 
@@ -126,8 +131,9 @@ Both passes accumulate into the same repulsion vector. Overlap near the drone (v
 F_cmd = F_ext + F_rep + F_damp
 ```
 
-- **F\_rep** = Σ k/d² toward the drone (clamped to `max_repulsion_force`)
-- **F\_damp** = −`obstacle_velocity_damping` × (|F\_rep| / max\_rep) × v\_cmd
+- **F\_ext** — estimated external force from the Kalman filter (red arrow)
+- **F\_rep** = Σ k/d² toward the drone, from all detected obstacles (teal/purple arrows, clamped to `max_repulsion_force`)
+- **F\_damp** = −`obstacle_velocity_damping` × (|F\_rep| / max\_rep) × v\_cmd (pink arrow, opposes velocity)
 
 The damping term is zero when no obstacles are near and grows proportionally as the drone enters the repulsion field. This prevents the growing oscillations that occur when the drone is caught between two close obstacles.
 
