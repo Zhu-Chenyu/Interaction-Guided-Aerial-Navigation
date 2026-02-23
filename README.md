@@ -113,7 +113,7 @@ Repulsive forces from the RPLidar scan are superimposed on the estimated externa
 
 <img src="images/Potential field.jpg" width="600"/>
 
-The diagram shows the full force superposition: the orange arc is the hemicircle detection zone facing F_ext (red). Obstacles inside generate avoidance forces (teal and purple arrows) pushing the drone away. Velocity damping (pink) opposes the current velocity when repulsion is active. The command force (blue dashed) is the vector sum of all contributions.
+The diagram shows the full force superposition: the orange arc is the hemicircle detection zone facing F_ext (red), its radius is proportionate to the magnitude of F_ext. Obstacles inside generate avoidance forces (teal and purple arrows) pushing the drone away. Velocity damping (pink) opposes the current velocity when repulsion is active. The command force (blue dashed) is the vector sum of all contributions.
 
 ### Two-Pass Scan Processing
 
@@ -147,7 +147,7 @@ The damping term is zero when no obstacles are near and grows proportionally as 
 | Flight Controller | Pixhawk 6C | PX4 autopilot, attitude and rate control |
 | Companion Computer | Raspberry Pi 5 | uXRCE-DDS bridge over UART |
 | Motion Capture | OptiTrack | 6-DoF position at 120 Hz |
-| LiDAR | SLAMTEC RPLidar | 2D scan, 360°, ~8 m range |
+| LiDAR | SLAMTEC RPLidar | 2D scan, 360°, ~12 m range |
 
 **Communication chain:**
 ```
