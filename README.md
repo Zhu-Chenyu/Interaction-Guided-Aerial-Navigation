@@ -1,6 +1,6 @@
 # Force-Compliant Drone with Obstacle Avoidance
 
-A quadrotor that moves in the direction of applied external forces — push it, and it follows. A Kalman filter estimates the force from position observations alone, and an RPLidar-based potential field prevents collisions while preserving the intended direction of motion.
+A quadrotor that moves in the direction of applied external forces — drag it, and it follows. A Kalman filter estimates the force from position observations alone, and an LiDAR-based potential field prevents collisions while preserving the intended direction of motion.
 
 ---
 
