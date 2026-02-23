@@ -34,7 +34,7 @@ The drone stays still when no force is applied. Push it in any horizontal direct
 
 A tilted quadrotor that is not accelerating horizontally must be experiencing an external horizontal force. This is the core insight that makes sensorless force estimation possible.
 
-![Model Diagram](images/ModelDiagram.jpg)
+<img src="images/ModelDiagram.jpg" width="700"/>
 
 At quasi-steady-state, the force balance gives:
 - **Vertical:** `T·sin(θ) = G` — vertical thrust equals gravity
@@ -111,7 +111,7 @@ The estimated `[Fx, Fy]` drives the velocity setpoint. Obstacle repulsion forces
 
 Repulsive forces from the RPLidar scan are superimposed on the estimated external force using a potential field approach.
 
-![Potential Field](images/Potential%20field.jpg)
+<img src="images/Potential field.jpg" width="600"/>
 
 The diagram shows the full force superposition: the orange arc is the hemicircle detection zone facing F_ext (red). Obstacles inside generate avoidance forces (teal and purple arrows) pushing the drone away. Velocity damping (pink) opposes the current velocity when repulsion is active. The command force (blue dashed) is the vector sum of all contributions.
 
