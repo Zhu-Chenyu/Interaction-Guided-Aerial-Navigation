@@ -111,24 +111,6 @@ private:
         msg.quality = 100;
 
         odom_pub_->publish(msg);
-
-        // Debug: publish NED data converted back to OptiTrack FLU frame as a TF.
-        // If conversion is correct, "imu_link_ned_check" overlaps "imu_link" in RViz.
-        // Inverse position: x_ot = x_ned, y_ot = -y_ned, z_ot = -z_ned
-        // Inverse quaternion: q_ot = (w, x, -y, -z) (same transform, self-inverse)
-        // geometry_msgs::msg::TransformStamped debug_tf;
-        // debug_tf.header.stamp = tf.header.stamp;
-        // debug_tf.header.frame_id = world_frame_;
-        // debug_tf.child_frame_id = "imu_link_ned_check";
-        // debug_tf.transform.translation.x = msg.position[0];
-        // debug_tf.transform.translation.y = -msg.position[1];
-        // debug_tf.transform.translation.z = -msg.position[2];
-        // double nw = msg.q[0], nx = msg.q[1], ny = msg.q[2], nz = msg.q[3];
-        // debug_tf.transform.rotation.w = nw;
-        // debug_tf.transform.rotation.x = nx;
-        // debug_tf.transform.rotation.y = -ny;
-        // debug_tf.transform.rotation.z = -nz;
-        // tf_broadcaster_->sendTransform(debug_tf);
     }
 
     std::shared_ptr<tf2_ros::Buffer> tf_buffer_;

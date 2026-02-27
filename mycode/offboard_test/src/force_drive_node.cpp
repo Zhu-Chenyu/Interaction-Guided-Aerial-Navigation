@@ -25,6 +25,7 @@
 #include <cmath>
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
@@ -38,6 +39,7 @@
 #include <px4_msgs/msg/vehicle_odometry.hpp>
 
 #include <sensor_msgs/msg/laser_scan.hpp>
+#include <std_msgs/msg/color_rgba.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 
@@ -75,6 +77,17 @@ public:
         declare_parameter<double>("omni_obstacle_distance", 0.5);
         declare_parameter<int>("scan_downsample_factor", 4);
 
+        // Log-odds grid parameters
+        declare_parameter<double>("grid_resolution", 0.05);
+        declare_parameter<double>("log_odds_occ", 0.85);
+        declare_parameter<double>("log_odds_free", -0.4);
+        declare_parameter<double>("log_odds_max", 6.0);
+        declare_parameter<double>("log_odds_occupied_threshold", 0.5);
+        declare_parameter<double>("log_odds_min_threshold", 0.1);
+        declare_parameter<double>("log_odds_decay_rate", 1.5);
+        declare_parameter<double>("log_odds_decay_delay", 0.3);
+        declare_parameter<double>("grid_max_range", 3.0);
+
         force_deadzone_ = get_parameter("force_deadzone").as_double();
         velocity_gain_ = get_parameter("velocity_gain").as_double();
         max_velocity_ = get_parameter("max_velocity").as_double();
@@ -97,6 +110,16 @@ public:
         omni_obstacle_distance_ = get_parameter("omni_obstacle_distance").as_double();
         scan_downsample_factor_ = get_parameter("scan_downsample_factor").as_int();
         if (scan_downsample_factor_ < 1) scan_downsample_factor_ = 1;
+
+        grid_resolution_ = get_parameter("grid_resolution").as_double();
+        log_odds_occ_ = static_cast<float>(get_parameter("log_odds_occ").as_double());
+        log_odds_free_ = static_cast<float>(get_parameter("log_odds_free").as_double());
+        log_odds_max_ = static_cast<float>(get_parameter("log_odds_max").as_double());
+        log_odds_occupied_threshold_ = static_cast<float>(get_parameter("log_odds_occupied_threshold").as_double());
+        log_odds_min_threshold_ = static_cast<float>(get_parameter("log_odds_min_threshold").as_double());
+        log_odds_decay_rate_ = static_cast<float>(get_parameter("log_odds_decay_rate").as_double());
+        log_odds_decay_delay_ = get_parameter("log_odds_decay_delay").as_double();
+        grid_max_range_ = get_parameter("grid_max_range").as_double();
 
         // Initialize Kalman filter
         init_kalman_filter();
@@ -130,6 +153,8 @@ public:
             "/obstacle_markers", 10);
         force_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
             "/force_marker", 10);
+        grid_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
+            "/log_odds_grid_markers", 10);
 
         // Subscribers
         vehicle_status_sub_ = this->create_subscription<VehicleStatus>(
@@ -187,6 +212,121 @@ private:
         while (angle < -M_PI) angle += 2.0 * M_PI;
         return angle;
     }
+
+    // ── Log-odds occupancy grid ──────────────────────────────────────────────
+    // Grid is stored in NED world coordinates, keyed by quantised (x, y) cell.
+    // Static obstacles accumulate to log_odds_max_ and persist for seconds;
+    // moving obstacles are cleared by free-space raycasting within one scan
+    // cycle, and any un-observed cell decays at log_odds_decay_rate_ /s.
+    //////////////////////////Citation[1]////////////////////////////
+    using GridKey = std::pair<int32_t, int32_t>;
+
+    struct GridKeyHash {
+        size_t operator()(const GridKey& k) const {
+            return std::hash<int64_t>()(
+                static_cast<int64_t>(k.first) << 32 |
+                static_cast<uint32_t>(k.second));
+        }
+    };
+
+    struct Cell {
+        float log_odds{0.0f};
+        rclcpp::Time last_observed{0, 0, RCL_ROS_TIME};
+    };
+
+    GridKey world_to_key(double x, double y) const
+    {
+        return {static_cast<int32_t>(std::floor(x / grid_resolution_)),
+                static_cast<int32_t>(std::floor(y / grid_resolution_))};
+    }
+
+    /**
+     * Integrate one LaserScan into the log-odds grid.
+     *
+     * For each ray:
+     *  - Cells along the free-space portion are decremented (only if already
+     *    present in the map, so new-free cells are never created).
+     *  - The endpoint is incremented (cell created if absent), capped at
+     *    log_odds_max_.
+     *
+     * drone_x_ned / drone_y_ned are the drone centre in NED world frame.
+     * yaw is the NED yaw (clockwise from north).
+     */
+    void update_log_odds_grid(double drone_x_ned, double drone_y_ned, double yaw)
+    {
+        const auto& scan = latest_scan_;
+        const int n = static_cast<int>(scan.ranges.size());
+        const auto now = this->now();
+        const double cos_yaw = std::cos(yaw);
+        const double sin_yaw = std::sin(yaw);
+
+        for (int i = 0; i < n; i += scan_downsample_factor_) {
+            double range = scan.ranges[i];
+            if (std::isnan(range) || std::isinf(range)) continue;
+            if (range < scan.range_min) continue;
+
+            const bool hits_obstacle = (range <= std::min(static_cast<double>(scan.range_max), grid_max_range_));
+            const double trace_range = std::min(range, grid_max_range_);
+
+            // Ray direction in base_link (FLU), then converted to NED world.
+            // base_link → NED: x_ned = cos*x_b + sin*y_b, y_ned = sin*x_b - cos*y_b
+            const double angle = scan.angle_min + i * scan.angle_increment;
+            const double cos_a = std::cos(angle);
+            const double sin_a = std::sin(angle);
+            const double dir_x = cos_yaw * cos_a + sin_yaw * sin_a;
+            const double dir_y = sin_yaw * cos_a - cos_yaw * sin_a;
+
+            // Mark free space: decrement only existing cells so the map stays sparse.
+            const int num_steps = static_cast<int>(trace_range / grid_resolution_);
+            for (int j = 1; j < num_steps; ++j) {
+                const double d = j * grid_resolution_;
+                auto key = world_to_key(drone_x_ned + dir_x * d,
+                                        drone_y_ned + dir_y * d);
+                auto it = log_odds_grid_.find(key);
+                if (it != log_odds_grid_.end()) {
+                    it->second.log_odds += log_odds_free_;
+                    if (it->second.log_odds <= log_odds_min_threshold_) {
+                        log_odds_grid_.erase(it);
+                    }
+                }
+            }
+
+            // Mark endpoint as occupied.
+            if (hits_obstacle) {
+                auto key = world_to_key(drone_x_ned + dir_x * range,
+                                        drone_y_ned + dir_y * range);
+                auto& cell = log_odds_grid_[key];
+                cell.log_odds = std::min(cell.log_odds + log_odds_occ_, log_odds_max_);
+                cell.last_observed = now;
+            }
+        }
+    }
+
+    /**
+     * Apply temporal decay to every cell in the grid.
+     *
+     * Decay only starts after log_odds_decay_delay_ seconds of not being
+     * observed, so short LiDAR blind spots (drone tilt) don't immediately
+     * erode well-established obstacles.  Cells that fall below
+     * log_odds_min_threshold_ are removed.
+     */
+    void decay_log_odds_grid(double dt)
+    {
+        const auto now = this->now();
+        for (auto it = log_odds_grid_.begin(); it != log_odds_grid_.end(); ) {
+            auto& cell = it->second;
+            const double age = (now - cell.last_observed).seconds();
+            if (age > log_odds_decay_delay_) {
+                cell.log_odds -= static_cast<float>(log_odds_decay_rate_ * dt);
+                if (cell.log_odds <= log_odds_min_threshold_) {
+                    it = log_odds_grid_.erase(it);
+                    continue;
+                }
+            }
+            ++it;
+        }
+    }
+    /////////////////////////////Citation[1]////////////////////////////
 
     void init_kalman_filter()
     {
@@ -356,108 +496,95 @@ private:
      *
      * Architecture constraint: this output must NOT feed back into update_force_estimate().
      */
+    /**
+     * Compute repulsive force from the persistent log-odds grid.
+     *
+     * Two contributions per cell (matching the original two-pass behaviour):
+     *  1. Hemicircle: cells within hemicircle_radius_ AND ±90° of movement dir.
+     *  2. Omnidirectional: cells within omni_obstacle_distance_ (full 360°).
+     * Cells in both zones contribute twice, giving stronger repulsion very
+     * close to the drone — same as the original overlapping-pass design.
+     *
+     * Because the grid persists across scan gaps (drone tilt), static walls
+     * remain active.  Moving obstacles are cleared by free-space raycasting
+     * in update_log_odds_grid() within one scan cycle.
+     */
     void compute_obstacle_repulsion(double fx_ned, double fy_ned, double yaw_ned,
+                                     double drone_x_ned, double drone_y_ned,
                                      double &frep_x_ned, double &frep_y_ned)
     {
         frep_x_ned = 0.0;
         frep_y_ned = 0.0;
         active_obstacle_points_.clear();
 
-        if (!have_scan_) return;
-
-        // Check scan staleness
-        double scan_age = (this->now() - rclcpp::Time(latest_scan_.header.stamp)).seconds();
-        if (scan_age > 1.0) {
-            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-                "Scan data stale (%.1fs old), obstacle avoidance disabled", scan_age);
-            return;
-        }
-
         // Convert F_ext from NED to base_link frame.
-        // Step 1: NED -> FRD body (yaw rotation)
+        // NED -> FRD (yaw rotation), then FRD -> base_link FLU (negate y).
         double cos_yaw = std::cos(yaw_ned);
         double sin_yaw = std::sin(yaw_ned);
-        double fx_frd =  cos_yaw * fx_ned + sin_yaw * fy_ned;
-        double fy_frd = -sin_yaw * fx_ned + cos_yaw * fy_ned;
-        // Step 2: FRD -> base_link FLU (x_base = x_frd forward, y_base = -y_frd left)
-        double fx_base =  fx_frd;
-        double fy_base = -fy_frd;
+        double fx_base =  cos_yaw * fx_ned + sin_yaw * fy_ned;
+        double fy_base = -(-sin_yaw * fx_ned + cos_yaw * fy_ned);  // FRD->FLU negate
         double f_ext_mag = std::sqrt(fx_base * fx_base + fy_base * fy_base);
 
         if (f_ext_mag < force_deadzone_) return;
 
-        // Hemicircle parameters (angle in base_link frame)
+        // Hemicircle parameters (in base_link frame)
         double f_ext_angle = std::atan2(fy_base, fx_base);
         hemicircle_radius_ = std::min(
             hemicircle_radius_base_ + hemicircle_radius_gain_ * f_ext_mag,
             max_obstacle_distance_);
         hemicircle_angle_ = f_ext_angle;
 
-        // Accumulate repulsive forces in body frame
         double frep_x_body = 0.0;
         double frep_y_body = 0.0;
 
-        const auto& scan = latest_scan_;
-        int n = static_cast<int>(scan.ranges.size());
+        // Search radius covers both hemicircle and omni zones.
+        const double search_radius = std::max(hemicircle_radius_, omni_obstacle_distance_);
+        const int grid_search = static_cast<int>(search_radius / grid_resolution_) + 2;
+        const auto [drone_gx, drone_gy] = world_to_key(drone_x_ned, drone_y_ned);
 
-        for (int i = 0; i < n; i += scan_downsample_factor_) {
-            double range = scan.ranges[i];
+        for (int32_t dgx = -grid_search; dgx <= grid_search; ++dgx) {
+            for (int32_t dgy = -grid_search; dgy <= grid_search; ++dgy) {
+                GridKey key = {drone_gx + dgx, drone_gy + dgy};
+                auto it = log_odds_grid_.find(key);
+                if (it == log_odds_grid_.end()) continue;
+                if (it->second.log_odds < log_odds_occupied_threshold_) continue;
 
-            // Skip invalid ranges
-            if (std::isnan(range) || std::isinf(range)) continue;
-            if (range < scan.range_min || range > scan.range_max) continue;
+                // Cell centre in NED world frame.
+                double cx_ned = (key.first  + 0.5) * grid_resolution_;
+                double cy_ned = (key.second + 0.5) * grid_resolution_;
 
-            // Clamp close ranges to avoid singularity
-            if (range < min_obstacle_distance_) range = min_obstacle_distance_;
+                // Vector from drone to cell in NED, then into base_link (FLU).
+                // NED -> base_link: x_b = cos*dx + sin*dy, y_b = sin*dx - cos*dy
+                double dx_ned = cx_ned - drone_x_ned;
+                double dy_ned = cy_ned - drone_y_ned;
+                double obs_x = cos_yaw * dx_ned + sin_yaw * dy_ned;
+                double obs_y = sin_yaw * dx_ned - cos_yaw * dy_ned;
 
-            // Skip obstacles beyond hemicircle radius
-            if (range > hemicircle_radius_) continue;
+                double range = std::sqrt(obs_x * obs_x + obs_y * obs_y);
+                if (range < min_obstacle_distance_) range = min_obstacle_distance_;
 
-            // Scan point angle: convert from laser frame to body frame
-            double angle_laser = scan.angle_min + i * scan.angle_increment;
-            double angle_body = normalize_angle(angle_laser);
+                double angle_body = std::atan2(obs_y, obs_x);
+                double angle_diff = normalize_angle(angle_body - f_ext_angle);
+                double rep_mag = repulsion_gain_ / (range * range);
 
-            // Hemicircle check: only consider obstacles within ±90° of movement direction
-            double angle_diff = normalize_angle(angle_body - f_ext_angle);
-            if (std::abs(angle_diff) > M_PI / 2.0) continue;
+                // Pass 1: hemicircle (forward cone).
+                bool in_hemi = (range <= hemicircle_radius_ &&
+                                std::abs(angle_diff) <= M_PI / 2.0);
+                // Pass 2: omnidirectional safety bubble.
+                bool in_omni = (range <= omni_obstacle_distance_);
 
-            // Repulsive force: k/d^2 pointing from obstacle toward drone
-            double obs_x = range * std::cos(angle_body);
-            double obs_y = range * std::sin(angle_body);
-            double rep_mag = repulsion_gain_ / (range*range);
+                if (!in_hemi && !in_omni) continue;
 
-            frep_x_body += rep_mag * (-obs_x / range);
-            frep_y_body += rep_mag * (-obs_y / range);
-
-            // Store for visualization
-            active_obstacle_points_.push_back({obs_x, obs_y});
+                // Count how many passes this cell contributes to
+                // (overlap → double contribution, matching original design).
+                int count = (in_hemi ? 1 : 0) + (in_omni ? 1 : 0);
+                frep_x_body += count * rep_mag * (-obs_x / range);
+                frep_y_body += count * rep_mag * (-obs_y / range);
+                active_obstacle_points_.push_back({obs_x, obs_y});
+            }
         }
 
-        // Omnidirectional close-proximity pass: full 360°, catches side/rear obstacles
-        // that the drone may be sidestepping into while avoiding a front obstacle.
-        for (int i = 0; i < n; i += scan_downsample_factor_) {
-            double range = scan.ranges[i];
-
-            if (std::isnan(range) || std::isinf(range)) continue;
-            if (range < scan.range_min || range > scan.range_max) continue;
-            if (range > omni_obstacle_distance_) continue;  // only the safety bubble
-
-            if (range < min_obstacle_distance_) range = min_obstacle_distance_;
-
-            double angle_laser = scan.angle_min + i * scan.angle_increment;
-            double angle_body = normalize_angle(angle_laser);
-
-            double obs_x = range * std::cos(angle_body);
-            double obs_y = range * std::sin(angle_body);
-            double rep_mag = repulsion_gain_ / (range * range);
-
-            frep_x_body += rep_mag * (-obs_x / range);
-            frep_y_body += rep_mag * (-obs_y / range);
-
-            active_obstacle_points_.push_back({obs_x, obs_y});
-        }
-
-        // Clamp total repulsive force magnitude
+        // Clamp total repulsive force magnitude.
         double frep_mag = std::sqrt(frep_x_body * frep_x_body + frep_y_body * frep_y_body);
         if (frep_mag > max_repulsion_force_) {
             double scale = max_repulsion_force_ / frep_mag;
@@ -465,13 +592,12 @@ private:
             frep_y_body *= scale;
         }
 
-        // Store body-frame repulsion for visualization
+        // Store body-frame repulsion for visualization.
         frep_body_x_ = frep_x_body;
         frep_body_y_ = frep_y_body;
 
-        // Convert F_rep from base_link FLU to NED
-        // FLU->FRD: (fx, -fy), then FRD->NED via R(yaw)
-        // Combined: fx_ned = cos*fx + sin*fy, fy_ned = sin*fx - cos*fy
+        // Convert F_rep from base_link FLU to NED.
+        // Same transform as body->NED: fx_ned = cos*fx + sin*fy, fy_ned = sin*fx - cos*fy
         frep_x_ned = cos_yaw * frep_x_body + sin_yaw * frep_y_body;
         frep_y_ned = sin_yaw * frep_x_body - cos_yaw * frep_y_body;
     }
@@ -685,6 +811,50 @@ private:
         }
     }
 
+    // Publish all occupied grid cells as a CUBE_LIST in the world (optitrack) frame.
+    void publish_grid_markers(double drone_z_optitrack)
+    {
+        visualization_msgs::msg::MarkerArray markers;
+        visualization_msgs::msg::Marker m;
+        m.header.frame_id = world_frame_;
+        m.header.stamp = this->now();
+        m.ns = "log_odds_grid";
+        m.id = 0;
+        m.type = visualization_msgs::msg::Marker::CUBE_LIST;
+        m.action = visualization_msgs::msg::Marker::ADD;
+        // Cubes are grid_resolution wide and slightly taller for visibility.
+        m.scale.x = grid_resolution_;
+        m.scale.y = grid_resolution_;
+        m.scale.z = grid_resolution_ * 2.0;
+        m.lifetime = rclcpp::Duration::from_seconds(0.5);
+
+        const float range = log_odds_max_ - log_odds_occupied_threshold_;
+
+        for (const auto& [key, cell] : log_odds_grid_) {
+            if (cell.log_odds < log_odds_occupied_threshold_) continue;
+
+            // NED cell centre → OptiTrack FLU: x_ot = x_ned, y_ot = -y_ned
+            geometry_msgs::msg::Point p;
+            p.x = (key.first  + 0.5) * grid_resolution_;          // NED north = OT forward
+            p.y = -((key.second + 0.5) * grid_resolution_);       // NED east  = -OT left
+            p.z = drone_z_optitrack;
+            m.points.push_back(p);
+
+            // Interpolate yellow → red as confidence rises.
+            float t = (range > 0.0f) ? (cell.log_odds - log_odds_occupied_threshold_) / range : 1.0f;
+            t = std::clamp(t, 0.0f, 1.0f);
+            std_msgs::msg::ColorRGBA c;
+            c.r = 1.0f;
+            c.g = 1.0f - t;   // yellow at t=0, red at t=1
+            c.b = 0.0f;
+            c.a = 0.5f + 0.5f * t;
+            m.colors.push_back(c);
+        }
+
+        markers.markers.push_back(m);
+        grid_marker_pub_->publish(markers);
+    }
+
     void clear_obstacle_markers()
     {
         visualization_msgs::msg::MarkerArray markers;
@@ -726,6 +896,22 @@ private:
         double fx = estimated_force_x_;
         double fy = estimated_force_y_;
         double force_mag = std::sqrt(fx * fx + fy * fy);
+
+        // Update log-odds grid from the latest scan (once per new scan).
+        if (have_pose && have_scan_ &&
+            rclcpp::Time(latest_scan_.header.stamp) != last_processed_scan_stamp_) {
+            update_log_odds_grid(cur_x, cur_y, cur_yaw);
+            last_processed_scan_stamp_ = rclcpp::Time(latest_scan_.header.stamp);
+        }
+        // Decay all grid cells every control cycle.
+        decay_log_odds_grid(dt);
+
+        // Publish grid map visualization at ~5 Hz (every 10 control cycles).
+        // Always publish (even when empty) so the topic is visible in RViz immediately.
+        if (++grid_viz_counter_ >= 10) {
+            grid_viz_counter_ = 0;
+            publish_grid_markers(have_pose ? -cur_z : 0.0);
+        }
 
         switch (mode_) {
             case Mode::WAITING_FOR_POSE:
@@ -849,8 +1035,8 @@ private:
                 if (force_mag > force_deadzone_) {
                     // Compute obstacle repulsion (does NOT affect KF estimates)
                     double frep_x = 0.0, frep_y = 0.0;
-                    if (obstacle_avoidance_enabled_ && have_scan_) {
-                        compute_obstacle_repulsion(fx, fy, cur_yaw, frep_x, frep_y);
+                    if (obstacle_avoidance_enabled_) {
+                        compute_obstacle_repulsion(fx, fy, cur_yaw, cur_x, cur_y, frep_x, frep_y);
                     }
 
                     // Velocity damping: opposes cmd_v proportional to repulsion magnitude.
@@ -1055,6 +1241,7 @@ private:
     rclcpp::Publisher<VehicleCommand>::SharedPtr vehicle_command_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr obstacle_marker_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr force_marker_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr grid_marker_pub_;
 
     // Timer
     rclcpp::TimerBase::SharedPtr timer_;
@@ -1110,6 +1297,22 @@ private:
     double hemicircle_radius_ = 0.0;
     double hemicircle_angle_ = 0.0;
     std::vector<std::array<double, 2>> active_obstacle_points_;
+
+    // Log-odds occupancy grid
+    std::unordered_map<GridKey, Cell, GridKeyHash> log_odds_grid_;
+    rclcpp::Time last_processed_scan_stamp_{0, 0, RCL_ROS_TIME};
+    int grid_viz_counter_ = 0;
+
+    // Log-odds parameters
+    double grid_resolution_;
+    float  log_odds_occ_;
+    float  log_odds_free_;
+    float  log_odds_max_;
+    float  log_odds_occupied_threshold_;
+    float  log_odds_min_threshold_;
+    float  log_odds_decay_rate_;
+    double log_odds_decay_delay_;
+    double grid_max_range_;
 
     // PX4 state
     uint8_t arming_state_ = VehicleStatus::ARMING_STATE_DISARMED;

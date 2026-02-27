@@ -23,3 +23,9 @@ Software and Packages
 [4] eProsima. "Micro XRCE-DDS." GitHub.
     https://github.com/eProsima/Micro-XRCE-DDS
     DDS bridge used to communicate between the Raspberry Pi companion computer and PX4.
+
+AI Usage
+--------
+[1] https://chatgpt.com/share/69a114be-a744-8009-8532-3884dd7fdb8e
+
+[2] https://claude.ai/share/a29d96cd-7f64-484b-8df7-c9a852c7fcca

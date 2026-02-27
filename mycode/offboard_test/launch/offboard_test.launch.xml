@@ -5,7 +5,7 @@
   <!-- Parameters for OptiTrack frame names -->
   <arg name="world_frame" default="optitrack" description="OptiTrack world frame"/>
   <arg name="drone_frame" default="imu_link" description="OptiTrack drone rigid body frame"/>
-  <arg name="takeoff_height" default="0.15" description="Takeoff height in meters"/>
+  <arg name="takeoff_height" default="0.25" description="Takeoff height in meters"/>
   <arg name="hover_duration" default="10.0" description="Hover duration in seconds"/>
   <arg name="validation_duration" default="3.0" description="Pose validation duration in seconds"/>
   <arg name="max_position_variance" default="0.01" description="Max allowed position variance during validation"/>
