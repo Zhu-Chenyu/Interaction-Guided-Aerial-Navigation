@@ -68,6 +68,7 @@ public:
         // Obstacle avoidance parameters
         declare_parameter<bool>("obstacle_avoidance_enabled", true);
         declare_parameter<double>("repulsion_gain", 0.5);
+        declare_parameter<double>("repulsion_gain_linear", 0.4);
         declare_parameter<double>("min_obstacle_distance", 0.15);
         declare_parameter<double>("max_obstacle_distance", 2.0);
         declare_parameter<double>("hemicircle_radius_base", 0.5);
@@ -76,6 +77,9 @@ public:
         declare_parameter<double>("obstacle_velocity_damping", 2.0);
         declare_parameter<double>("omni_obstacle_distance", 0.5);
         declare_parameter<int>("scan_downsample_factor", 4);
+        declare_parameter<double>("lateral_restore_gain", 0.4);
+        declare_parameter<double>("drone_clearance_radius", 0.35);
+        declare_parameter<double>("gap_align_gain", 1.5);
 
         // Log-odds grid parameters
         declare_parameter<double>("grid_resolution", 0.05);
@@ -101,6 +105,7 @@ public:
 
         obstacle_avoidance_enabled_ = get_parameter("obstacle_avoidance_enabled").as_bool();
         repulsion_gain_ = get_parameter("repulsion_gain").as_double();
+        repulsion_gain_linear_ = get_parameter("repulsion_gain_linear").as_double();
         min_obstacle_distance_ = get_parameter("min_obstacle_distance").as_double();
         max_obstacle_distance_ = get_parameter("max_obstacle_distance").as_double();
         hemicircle_radius_base_ = get_parameter("hemicircle_radius_base").as_double();
@@ -109,6 +114,9 @@ public:
         obstacle_velocity_damping_ = get_parameter("obstacle_velocity_damping").as_double();
         omni_obstacle_distance_ = get_parameter("omni_obstacle_distance").as_double();
         scan_downsample_factor_ = get_parameter("scan_downsample_factor").as_int();
+        lateral_restore_gain_    = get_parameter("lateral_restore_gain").as_double();
+        drone_clearance_radius_  = get_parameter("drone_clearance_radius").as_double();
+        gap_align_gain_          = get_parameter("gap_align_gain").as_double();
         if (scan_downsample_factor_ < 1) scan_downsample_factor_ = 1;
 
         grid_resolution_ = get_parameter("grid_resolution").as_double();
@@ -536,6 +544,9 @@ private:
 
         double frep_x_body = 0.0;
         double frep_y_body = 0.0;
+        // Nearest obstacle lateral clearances for gap detection (forward hemisphere only).
+        double min_d_left  = std::numeric_limits<double>::max();
+        double min_d_right = std::numeric_limits<double>::max();
 
         // Search radius covers both hemicircle and omni zones.
         const double search_radius = std::max(hemicircle_radius_, omni_obstacle_distance_);
@@ -565,7 +576,8 @@ private:
 
                 double angle_body = std::atan2(obs_y, obs_x);
                 double angle_diff = normalize_angle(angle_body - f_ext_angle);
-                double rep_mag = repulsion_gain_ / (range * range);
+                double rep_mag = repulsion_gain_ / (range * range)
+                              + repulsion_gain_linear_ / range;
 
                 // Pass 1: hemicircle (forward cone).
                 bool in_hemi = (range <= hemicircle_radius_ &&
@@ -581,6 +593,52 @@ private:
                 frep_x_body += count * rep_mag * (-obs_x / range);
                 frep_y_body += count * rep_mag * (-obs_y / range);
                 active_obstacle_points_.push_back({obs_x, obs_y});
+
+                // Track lateral clearances for gap detection.
+                // angle_diff is signed angle of obstacle relative to F_ext:
+                //   cos(angle_diff) > 0 → obstacle is ahead of drone
+                //   sin(angle_diff) > 0 → obstacle is to the LEFT of F_ext
+                if (in_hemi) {
+                    const double along   =  range * std::cos(angle_diff);
+                    const double lateral =  range * std::sin(angle_diff);
+                    if (along > 0) {
+                        if (lateral > 0) min_d_left  = std::min(min_d_left,  lateral);
+                        else             min_d_right = std::min(min_d_right, -lateral);
+                    }
+                }
+            }
+        }
+
+        // ── Gap detection ────────────────────────────────────────────────────
+        // If obstacles bracket both lateral sides AND the opening is wide enough
+        // for the drone to fit, treat this as a passable gap:
+        //   • Reduce the backward (anti-F_ext) repulsion so the drone is not
+        //     pushed away from a gap it can physically squeeze through.
+        //   • After clamping, add a centering force to align with the gap centre.
+        const double passable_clearance = 2.0 * drone_clearance_radius_;
+        const bool left_visible  = (min_d_left  < hemicircle_radius_);
+        const bool right_visible = (min_d_right < hemicircle_radius_);
+        const bool gap_detected  = (left_visible && right_visible);
+        const bool gap_passable  = gap_detected &&
+                                   ((min_d_left + min_d_right) >= passable_clearance);
+
+        // Update traversal state: enter when a passable gap is confirmed,
+        // exit only when both sides have fully cleared the hemicircle.
+        if (gap_passable)                   gap_traversing_ = true;
+        if (!left_visible && !right_visible) gap_traversing_ = false;
+
+        // Backward repulsion reduction: only when both walls confirm a passable gap.
+        if (gap_passable) {
+            const double f_ux = std::cos(f_ext_angle);
+            const double f_uy = std::sin(f_ext_angle);
+            const double frep_along = frep_x_body * f_ux + frep_y_body * f_uy;
+            if (frep_along < 0) {
+                // Scale reduction: 0 = barely passable (keep most repulsion),
+                //                  1 = plenty of room (remove up to 85% of backward push).
+                const double extra     = (min_d_left + min_d_right) - passable_clearance;
+                const double reduction = std::clamp(extra / drone_clearance_radius_, 0.0, 1.0) * 0.85;
+                frep_x_body -= reduction * frep_along * f_ux;
+                frep_y_body -= reduction * frep_along * f_uy;
             }
         }
 
@@ -590,6 +648,19 @@ private:
             double scale = max_repulsion_force_ / frep_mag;
             frep_x_body *= scale;
             frep_y_body *= scale;
+        }
+
+        // Centering force: applied AFTER clamping so it is not suppressed.
+        // Active during confirmed gap traversal (gap_passable OR gap_traversing_).
+        // When one wall has exited the hemicircle, substitute hemicircle_radius_ for
+        // that side so the drone keeps steering away from the remaining wall rather
+        // than suddenly being pushed sideways with no counterbalance.
+        if ((gap_passable || gap_traversing_) && gap_align_gain_ > 0.0) {
+            const double eff_left  = left_visible  ? min_d_left  : hemicircle_radius_;
+            const double eff_right = right_visible ? min_d_right : hemicircle_radius_;
+            const double center_lat = (eff_right - eff_left) * 0.5;
+            frep_x_body += gap_align_gain_ * center_lat * std::sin(f_ext_angle);
+            frep_y_body -= gap_align_gain_ * center_lat * std::cos(f_ext_angle);
         }
 
         // Store body-frame repulsion for visualization.
@@ -870,6 +941,46 @@ private:
         obstacle_marker_pub_->publish(markers);
     }
 
+    /**
+     * Hard safety bubble: remove any velocity component that would move the
+     * drone toward an obstacle that is already inside the omni safety bubble.
+     * This is a hard kinematic constraint — no force magnitude can override it.
+     */
+    void apply_safety_bubble_constraint(double &vx_ned, double &vy_ned,
+                                        double pos_x, double pos_y)
+    {
+        const auto [drone_gx, drone_gy] = world_to_key(pos_x, pos_y);
+        const int r = static_cast<int>(omni_obstacle_distance_ / grid_resolution_) + 1;
+
+        for (int32_t dgx = -r; dgx <= r; ++dgx) {
+            for (int32_t dgy = -r; dgy <= r; ++dgy) {
+                GridKey key = {drone_gx + dgx, drone_gy + dgy};
+                auto it = log_odds_grid_.find(key);
+                if (it == log_odds_grid_.end()) continue;
+                if (it->second.log_odds < log_odds_occupied_threshold_) continue;
+
+                double cx = (key.first  + 0.5) * grid_resolution_;
+                double cy = (key.second + 0.5) * grid_resolution_;
+                double dx = cx - pos_x;
+                double dy = cy - pos_y;
+                double dist = std::hypot(dx, dy);
+
+                if (dist >= omni_obstacle_distance_ || dist < 1e-3) continue;
+
+                // Unit vector pointing from drone toward obstacle (NED).
+                double nx = dx / dist;
+                double ny = dy / dist;
+
+                // Cancel any velocity component that moves toward this obstacle.
+                double v_toward = vx_ned * nx + vy_ned * ny;
+                if (v_toward > 0.0) {
+                    vx_ned -= v_toward * nx;
+                    vy_ned -= v_toward * ny;
+                }
+            }
+        }
+    }
+
     void control_loop()
     {
         const double dt = 0.02;
@@ -1049,6 +1160,21 @@ private:
                     // Superpose: F_cmd = F_ext + F_rep + F_damp
                     double fcmd_x = fx + frep_x + fdamp_x;
                     double fcmd_y = fy + frep_y + fdamp_y;
+
+                    // Lateral restoring force: oppose the component of current velocity
+                    // that is perpendicular to F_ext. This reduces excess sideways drift
+                    // after the drone detours around an obstacle — once clear, it returns
+                    // toward the intended direction without over-shooting laterally.
+                    if (lateral_restore_gain_ > 0.0 && force_mag > force_deadzone_) {
+                        double f_unit_x = fx / force_mag;
+                        double f_unit_y = fy / force_mag;
+                        double v_along = cmd_vx_ * f_unit_x + cmd_vy_ * f_unit_y;
+                        double v_lat_x = cmd_vx_ - v_along * f_unit_x;
+                        double v_lat_y = cmd_vy_ - v_along * f_unit_y;
+                        fcmd_x -= lateral_restore_gain_ * v_lat_x;
+                        fcmd_y -= lateral_restore_gain_ * v_lat_y;
+                    }
+
                     double fcmd_mag = std::sqrt(fcmd_x * fcmd_x + fcmd_y * fcmd_y);
 
                     if (fcmd_mag > 0.01) {
@@ -1063,6 +1189,11 @@ private:
                         // F_ext and F_rep cancel out - stop
                         cmd_vx_ = 0.0;
                         cmd_vy_ = 0.0;
+                    }
+
+                    // Hard safety bubble: cannot move toward any obstacle inside the bubble.
+                    if (obstacle_avoidance_enabled_ && have_pose) {
+                        apply_safety_bubble_constraint(cmd_vx_, cmd_vy_, cur_x, cur_y);
                     }
 
                     last_frep_x_ = frep_x;
@@ -1089,6 +1220,11 @@ private:
                         double scale = new_speed / cmd_speed;
                         cmd_vx_ *= scale;
                         cmd_vy_ *= scale;
+
+                        // Hard safety bubble applies during decel too.
+                        if (obstacle_avoidance_enabled_ && have_pose) {
+                            apply_safety_bubble_constraint(cmd_vx_, cmd_vy_, cur_x, cur_y);
+                        }
 
                         publish_velocity_control_mode();
                         publish_velocity_setpoint(cmd_vx_, cmd_vy_, hold_z_, hold_yaw_);
@@ -1280,6 +1416,7 @@ private:
     // Obstacle avoidance parameters
     bool obstacle_avoidance_enabled_;
     double repulsion_gain_;
+    double repulsion_gain_linear_;
     double min_obstacle_distance_;
     double max_obstacle_distance_;
     double hemicircle_radius_base_;
@@ -1288,6 +1425,10 @@ private:
     double obstacle_velocity_damping_;
     double omni_obstacle_distance_;
     int scan_downsample_factor_;
+    double lateral_restore_gain_;
+    double drone_clearance_radius_;
+    double gap_align_gain_;
+    bool gap_traversing_ = false;   // true while drone is threading a confirmed gap
 
     // Obstacle avoidance state
     double last_frep_x_ = 0.0;

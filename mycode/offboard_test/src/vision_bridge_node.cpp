@@ -63,16 +63,21 @@ private:
             return;
         }
 
+        auto now = this->get_clock()->now();
+
         VehicleOdometry msg{};
-        msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
+        msg.timestamp = now.nanoseconds() / 1000;
         msg.timestamp_sample = msg.timestamp;
 
         msg.pose_frame = VehicleOdometry::POSE_FRAME_NED;
 
         // Position: OptiTrack world FLU (X-forward, Y-left, Z-up) -> NED
-        msg.position[0] = tf.transform.translation.x;   // forward = north
-        msg.position[1] = -tf.transform.translation.y;  // -left = east
-        msg.position[2] = -tf.transform.translation.z;  // -up = down
+        double pos_x =  tf.transform.translation.x;  // forward = north
+        double pos_y = -tf.transform.translation.y;  // -left   = east
+        double pos_z = -tf.transform.translation.z;  // -up     = down
+        msg.position[0] = pos_x;
+        msg.position[1] = pos_y;
+        msg.position[2] = pos_z;
 
         // Quaternion: OptiTrack world FLU + body FLU -> PX4 world NED + body FRD
         // R_world = diag(1,-1,-1) maps FLU->NED
@@ -87,11 +92,42 @@ private:
         msg.q[2] = -y;
         msg.q[3] = -z;
 
-        // No velocity from mocap
-        msg.velocity_frame = VehicleOdometry::VELOCITY_FRAME_UNKNOWN;
-        msg.velocity[0] = std::nanf("");
-        msg.velocity[1] = std::nanf("");
-        msg.velocity[2] = std::nanf("");
+        // Velocity: finite-difference of NED position at 50 Hz.
+        // Gives PX4's EKF a direct velocity measurement so it doesn't have to
+        // differentiate position internally (which adds a cycle of lag).
+        if (have_prev_) {
+            double dt = (now - prev_stamp_).seconds();
+            if (dt > 0.005 && dt < 0.1) {  // sanity: reject stale or duplicate TFs
+                msg.velocity_frame = VehicleOdometry::VELOCITY_FRAME_NED;
+                msg.velocity[0] = (pos_x - prev_x_) / dt;
+                msg.velocity[1] = (pos_y - prev_y_) / dt;
+                msg.velocity[2] = (pos_z - prev_z_) / dt;
+                msg.velocity_variance[0] = 0.01f;  // ~0.1 m/s std-dev
+                msg.velocity_variance[1] = 0.01f;
+                msg.velocity_variance[2] = 0.01f;
+            } else {
+                msg.velocity_frame = VehicleOdometry::VELOCITY_FRAME_UNKNOWN;
+                msg.velocity[0] = std::nanf("");
+                msg.velocity[1] = std::nanf("");
+                msg.velocity[2] = std::nanf("");
+                msg.velocity_variance[0] = std::nanf("");
+                msg.velocity_variance[1] = std::nanf("");
+                msg.velocity_variance[2] = std::nanf("");
+            }
+        } else {
+            msg.velocity_frame = VehicleOdometry::VELOCITY_FRAME_UNKNOWN;
+            msg.velocity[0] = std::nanf("");
+            msg.velocity[1] = std::nanf("");
+            msg.velocity[2] = std::nanf("");
+            msg.velocity_variance[0] = std::nanf("");
+            msg.velocity_variance[1] = std::nanf("");
+            msg.velocity_variance[2] = std::nanf("");
+        }
+
+        prev_x_ = pos_x;  prev_y_ = pos_y;  prev_z_ = pos_z;
+        prev_stamp_ = now;
+        have_prev_ = true;
+
         msg.angular_velocity[0] = std::nanf("");
         msg.angular_velocity[1] = std::nanf("");
         msg.angular_velocity[2] = std::nanf("");
@@ -103,9 +139,6 @@ private:
         msg.orientation_variance[0] = 0.001f;
         msg.orientation_variance[1] = 0.001f;
         msg.orientation_variance[2] = 0.001f;
-        msg.velocity_variance[0] = std::nanf("");
-        msg.velocity_variance[1] = std::nanf("");
-        msg.velocity_variance[2] = std::nanf("");
 
         msg.reset_counter = 0;
         msg.quality = 100;
@@ -120,6 +153,13 @@ private:
     rclcpp::TimerBase::SharedPtr timer_;
     std::string world_frame_;
     std::string drone_frame_;
+
+    // Previous position for finite-difference velocity
+    double prev_x_ = 0.0;
+    double prev_y_ = 0.0;
+    double prev_z_ = 0.0;
+    rclcpp::Time prev_stamp_{0, 0, RCL_ROS_TIME};
+    bool have_prev_ = false;
 };
 
 int main(int argc, char *argv[])
