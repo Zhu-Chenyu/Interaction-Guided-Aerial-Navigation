@@ -225,3 +225,122 @@ ros2 launch sllidar_ros2 sllidar_c1_launch.py
 | `omni_obstacle_distance` | 0.5 m | Radius of the 360° safety bubble |
 | `max_repulsion_force` | 3.0 N | Maximum total repulsion force |
 | `obstacle_velocity_damping` | 2.0 | Damping strength between close obstacles |
+
+---
+
+## PX4 Parameter Setup (QGroundControl)
+
+Set these in QGroundControl → Vehicle Setup → Parameters.
+**Calibration values** (CAL_ACC\*, CAL_GYRO\*, CAL_MAG\*, RC\*_MAX/MIN/TRIM) are hardware-specific —
+redo them with QGC's sensor calibration wizard for your own hardware.
+
+### GPS / height reference (indoor OptiTrack)
+
+| Parameter | Value | Why |
+|-----------|-------|-----|
+| `GPS_1_CONFIG` | `Disabled` | No GPS indoors |
+| `SYS_HAS_GPS` | `Disabled` | Tells PX4 not to wait for a GPS fix |
+| `EKF2_GPS_CTRL` | `0` | Disable GPS fusion in EKF |
+| `EKF2_HGT_REF` | `Vision` | Use OptiTrack as height reference (not barometer) |
+| `EKF2_MAG_TYPE` | `None` | Disable magnetometer fusion (unreliable indoors) |
+| `EKF2_MULTI_IMU` | `3` | Enable multi-IMU EKF |
+| `EKF2_EVP_NOISE` | `0.05 m` | Vision position measurement noise |
+| `EKF2_EVV_NOISE` | `0.01 m/s` | Vision velocity measurement noise |
+
+### ROS 2 / uXRCE-DDS bridge
+
+| Parameter | Value | Why |
+|-----------|-------|-----|
+| `UXRCE_DDS_CFG` | `TELEM 2` | Enable DDS agent on TELEM2 serial port |
+| `UXRCE_DDS_DOM_ID` | `25` | ROS 2 domain ID — must match `ROS_DOMAIN_ID` on all machines |
+
+On the companion computer (RPi), run the agent:
+```bash
+MicroXRCEAgent serial --dev /dev/ttyAMA0 -b 921600
+```
+
+### Airframe
+
+| Parameter | Value | Why |
+|-----------|-------|-----|
+| `SYS_AUTOSTART` | `4019` | Generic quadrotor X airframe |
+| `MAV_TYPE` | `Quadrotor` | Multicopter type |
+
+### Motor / ESC mapping
+
+| Parameter | Value |
+|-----------|-------|
+| `PWM_AUX_FUNC1–4` | `Motor 1–4` |
+| `PWM_AUX_MIN1–4` | `1100 µs` |
+| `PWM_AUX_MAX1–4` | `1900 µs` |
+| `CA_ROTOR_COUNT` | `4` |
+
+Rotor geometry (CoG-relative, normalized):
+
+| Rotor | PX | PY | KM | Position |
+|-------|----|----|----|----------|
+| 0 | +1.00 | +1.00 | (default) | Front-right (CW) |
+| 1 | −1.00 | −1.00 | (default) | Rear-left (CW) |
+| 2 | +1.00 | −1.00 | −0.050 | Front-left (CCW) |
+| 3 | −1.00 | +1.00 | −0.050 | Rear-right (CCW) |
+
+### Flight modes (RC channel mapping)
+
+| Parameter | Value | Function |
+|-----------|-------|----------|
+| `RC_MAP_THROTTLE` | Ch 1 | Throttle |
+| `RC_MAP_ROLL` | Ch 2 | Roll |
+| `RC_MAP_PITCH` | Ch 3 | Pitch |
+| `RC_MAP_YAW` | Ch 4 | Yaw |
+| `RC_MAP_FLTMODE` | Ch 5 | 6-position flight mode selector |
+| `RC_MAP_KILL_SW` | Ch 6 | Emergency kill |
+| `RC_MAP_ARM_SW` | Ch 7 | Arm switch |
+| `RC_MAP_OFFB_SW` | Ch 8 | Offboard toggle |
+
+| Slot | Mode |
+|------|------|
+| `COM_FLTMODE1` | Manual |
+| `COM_FLTMODE2` | Stabilized |
+| `COM_FLTMODE4` | Position |
+| `COM_FLTMODE6` | Offboard |
+
+### RC loss exception
+
+| Parameter | Value | Why |
+|-----------|-------|-----|
+| `COM_RCL_EXCEPT` | `4` | No failsafe on RC loss while in Offboard mode |
+
+Required when running offboard experiments without holding the transmitter.
+
+### Rate PID gains (tuned for X500 V2)
+
+| Parameter | Value |
+|-----------|-------|
+| `MC_ROLLRATE_P` | `0.140` |
+| `MC_ROLLRATE_I` | `0.300` |
+| `MC_ROLLRATE_D` | `0.0040` |
+| `MC_PITCHRATE_P` | `0.140` |
+| `MC_PITCHRATE_I` | `0.300` |
+| `MC_PITCHRATE_D` | `0.0040` |
+| `MPC_XY_P` | `1.50` |
+| `MPC_Z_P` | `1.50` |
+
+### IMU / sensor settings
+
+| Parameter | Value | Why |
+|-----------|-------|-----|
+| `IMU_GYRO_CUTOFF` | `30.0 Hz` | Gyro low-pass cutoff |
+| `IMU_GYRO_RATEMAX` | `800 Hz` | Gyro inner-loop rate |
+| `IMU_GYRO_FFT_EN` | `Enabled` | Gyro FFT for vibration monitoring |
+| `UAVCAN_ENABLE` | `Sensors Auto` | DroneCAN for peripheral sensors |
+
+`SENS_BOARD_*_OFF` corrects for the FC not being mounted perfectly level.
+Recalibrate with QGC's level calibration if your FC mount differs.
+
+### Safety
+
+| Parameter | Value | Why |
+|-----------|-------|-----|
+| `MAN_ARM_GESTURE` | `Disabled` | Prevent accidental arming by stick gesture |
+| `RTL_RETURN_ALT` | `30.0 m` | Altitude climbed to before RTL transit |
+| `RTL_DESCEND_ALT` | `10.0 m` | Altitude to descend to before landing |
