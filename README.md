@@ -242,7 +242,7 @@ Recalibrate with QGC's level calibration if your FC mount differs.
 
 Repulsive forces from the RPLidar scan are superimposed on the estimated external force using a potential field approach.
 
-<img src="images/Potential field.jpg" width="500"/>
+<p align="center"><img src="images/Potential field.jpg" width="500"/></p>
 
 The diagram shows the full force superposition: the orange arc is the hemicircle detection zone facing F_ext (red), its radius is proportionate to the magnitude of F_ext. Obstacles inside generate avoidance forces (teal and purple arrows) pushing the drone away. Velocity damping (pink) opposes the current velocity when repulsion is active. The command force (blue dashed) is the vector sum of all contributions.
 
@@ -276,7 +276,7 @@ The damping term is zero when no obstacles are near and grows proportionally as 
 
 A tilted quadrotor that is not accelerating horizontally must be experiencing an external horizontal force. This is the core insight that makes sensorless force estimation possible.
 
-<img src="images/ModelDiagram.jpg" width="600"/>
+<p align="center"><img src="images/ModelDiagram.jpg" width="600"/></p>
 
 At quasi-steady-state, the force balance gives:
 - **Vertical:** `T·sin(θ) = G` — vertical thrust equals gravity
@@ -288,7 +288,7 @@ By observing position through OptiTrack and knowing the thrust command, any resi
 
 The system uses four coordinate frames, all visible on the physical drone:
 
-![Drone Frames](images/DroneFrames.jpg)
+<p align="center"><img src="images/DroneFrames.jpg" width="700"/></p>
 
 | Frame | Convention | Role |
 |-------|------------|------|
@@ -310,13 +310,13 @@ Because PX4 produces horizontal motion by tilting the drone, pitch and roll are 
 
 **Pitch correlates with X position error (NED):**
 
-![Pitch to X Error](images/pitch_to_xe.png)
+<p align="center"><img src="images/pitch_to_xe.png" width="800"/></p>
 
 Correlation = 0.732. Pitch tracks the X-axis error, confirming the model: when the drone is pushed forward, PX4 pitches nose-down to accelerate, producing a position error that grows until it matches the commanded velocity.
 
 **Roll correlates with Y position error (NED):**
 
-![Roll to Y Error](images/roll_to_ye.png)
+<p align="center"><img src="images/roll_to_ye.png" width="800"/></p>
 
 Correlation = −0.777 (negative due to the FRD→NED sign convention). Roll tracks Y-axis error with the expected sign flip, consistent with the frame rotation.
 
