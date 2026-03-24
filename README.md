@@ -2,7 +2,7 @@
 
 A quadrotor that moves in the direction of applied external forces — drag it, and it follows. A Kalman filter estimates the force from position observations alone, and an LiDAR-based potential field prevents collisions while preserving the intended direction of motion.
 
-Please visit https://zhu-chenyu.github.io/drone/ for project write-up.
+**Project write-up:** [zhu-chenyu.github.io/drone](https://zhu-chenyu.github.io/drone/)
 
 ---
 
@@ -269,6 +269,43 @@ F_cmd = F_ext + F_rep + F_damp
 - **F\_damp** = −`obstacle_velocity_damping` × (|F\_rep| / max\_rep) × v\_cmd (pink arrow, opposes velocity)
 
 The damping term is zero when no obstacles are near and grows proportionally as the drone enters the repulsion field. This prevents the growing oscillations that occur when the drone is caught between two close obstacles.
+
+### Gap Detection and Centering
+
+When the hemicircle detects obstacles on both lateral sides simultaneously, the drone may be approaching a narrow gap. A dedicated pipeline decides whether the gap is passable and, if so, steers the drone through it.
+
+#### Passability check
+
+For each occupied cell inside the hemicircle, the drone computes its signed lateral distance relative to F\_ext — positive to the left, negative to the right. The minimum distance on each side gives `min_d_left` and `min_d_right`. The gap is declared passable when both sides are visible **and** the combined width clears the drone's body:
+
+```
+gap_passable = (min_d_left + min_d_right) ≥ 2 × drone_clearance_radius
+```
+
+When passable, the backward component of F\_rep (the part opposing F\_ext) is reduced by up to 85 % — scaled by how much spare room exists beyond the minimum clearance. This lets the drone commit to the gap instead of being pushed back by its own avoidance system.
+
+#### Centering force
+
+Once a passable gap is confirmed, a centering force is added **after** the repulsion is clamped:
+
+```
+center_offset = (min_d_right − min_d_left) / 2
+F_center = gap_align_gain × center_offset  (perpendicular to F_ext)
+```
+
+A positive offset means the drone is closer to the left wall, so F\_center pushes it right — and vice versa. Because the centering force is added after clamping, it is never suppressed by `max_repulsion_force`.
+
+#### Traversal state
+
+A one-way latch (`gap_traversing`) handles the asymmetric exit problem: as the drone leaves, one wall clears the hemicircle before the other. Without special handling, `gap_passable` drops to false and the centering force vanishes abruptly, kicking the drone sideways.
+
+The latch enters when `gap_passable` first becomes true and only exits when **both** sides have cleared the hemicircle simultaneously. While the latch is active, any side that has already cleared is assigned a virtual distance equal to `hemicircle_radius` so the centering force fades smoothly rather than snapping off:
+
+```
+eff_left  = left_visible  ? min_d_left  : hemicircle_radius
+eff_right = right_visible ? min_d_right : hemicircle_radius
+center_offset = (eff_right − eff_left) / 2
+```
 
 ---
 
